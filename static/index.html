@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MailChat</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="shell" id="shell">
+    <aside class="sidebar">
+      <div class="brand-row">
+        <h1>MailChat</h1>
+        <button id="modeSwitchBtn" class="ghost">📱 Mobile</button>
+      </div>
+
+      <div class="toolbar account-toolbar">
+        <select id="accountSelect"></select>
+        <button id="newAccountBtn">+ Konto</button>
+      </div>
+
+      <div class="toolbar contact-toolbar">
+        <input id="quickContactInput" type="email" placeholder="Neue Kontakt-E-Mail" />
+        <input id="quickContactNameInput" placeholder="Name" />
+        <button id="quickAddContactBtn" class="ghost">+</button>
+      </div>
+
+      <div class="toolbar group-toolbar">
+        <input id="groupNameInput" placeholder="Neue Gruppe" />
+        <button id="createGroupBtn" class="ghost">Gruppe</button>
+      </div>
+
+      <div class="toolbar danger-toolbar">
+        <button id="deleteContactBtn" class="ghost">Kontakt löschen</button>
+        <button id="deleteGroupBtn" class="ghost">Gruppe löschen</button>
+      </div>
+
+      <div class="toolbar sticky-toolbar">
+        <button id="syncBtn" class="full">Synchronisieren</button>
+      </div>
+
+      <div class="chat-scroll">
+        <ul id="chatList" class="chat-list"></ul>
+        <h3>Gruppen</h3>
+        <ul id="groupList" class="chat-list"></ul>
+      </div>
+    </aside>
+
+    <main class="chat-main">
+      <div class="chat-top">
+        <button id="mobileBackBtn" class="ghost mobile-only" type="button">← Zurück</button>
+        <div class="contact-info" id="contactInfo">Kein Chat ausgewählt</div>
+      </div>
+
+      <div id="messages" class="messages"></div>
+
+      <form id="sendForm" class="composer">
+        <label class="html-switch"><input id="htmlMode" type="checkbox" /> HTML</label>
+        <input id="attachmentInput" type="file" multiple />
+        <button id="emojiBtn" type="button" class="ghost">😊</button>
+        <textarea id="messageInput" placeholder="Nachricht schreiben..."></textarea>
+        <button type="submit">Senden</button>
+      </form>
+    </main>
+  </div>
+
+  <dialog id="accountDialog">
+    <form id="accountForm" method="dialog">
+      <h2>E-Mail-Konto</h2>
+      <label>Name<input name="name" required /></label>
+      <label>E-Mail<input name="email" type="email" required /></label>
+      <label>IMAP Host<input name="imap_host" required /></label>
+      <label>IMAP Port<input name="imap_port" value="993" required /></label>
+      <label>SMTP Host<input name="smtp_host" required /></label>
+      <label>SMTP Port<input name="smtp_port" value="465" required /></label>
+      <label>SMTP Sicherheit
+        <select name="smtp_security">
+          <option value="auto">Auto (empfohlen)</option>
+          <option value="ssl">SSL/TLS</option>
+          <option value="starttls">STARTTLS</option>
+          <option value="plain">Plain</option>
+        </select>
+      </label>
+      <label>Passwort / App-Passwort<input name="password" type="password" required /></label>
+      <label><input name="use_ssl" type="checkbox" checked /> IMAP SSL verwenden</label>
+      <div class="dialog-actions">
+        <button type="button" id="closeDialogBtn" class="ghost">Abbrechen</button>
+        <button type="submit">Speichern</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="settingsDialog">
+    <form id="settingsForm" method="dialog">
+      <h2>Einstellungen</h2>
+      <label>Polling Intervall (ms)<input name="poll_interval_ms" type="number" min="500" step="100" /></label>
+      <label><input name="auto_sync_enabled" type="checkbox" /> Auto-Sync aktiv</label>
+      <label><input name="filter_noreply" type="checkbox" /> No-Reply filtern</label>
+      <label><input name="filter_info_addresses" type="checkbox" /> info@ filtern</label>
+      <label><input name="filter_promotions" type="checkbox" /> Werbe-/List-Mails filtern</label>
+      <label><input name="strip_replies" type="checkbox" /> Zitatverläufe aus Antworten entfernen</label>
+      <label><input name="mark_read_on_open" type="checkbox" /> Nachrichten beim Chat-Öffnen als gelesen markieren</label>
+      <div class="dialog-actions">
+        <button type="button" id="closeSettingsBtn" class="ghost">Schließen</button>
+        <button type="submit">Speichern</button>
+      </div>
+    </form>
+  </dialog>
+
+  <button id="settingsBtn" class="settings-fab" title="Einstellungen">⚙️</button>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
