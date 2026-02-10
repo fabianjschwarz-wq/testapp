@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 import json
+import mimetypes
 import os
+import re
 import sqlite3
+import ssl
 import threading
 from datetime import datetime, timezone
 from email import message_from_bytes
@@ -16,8 +19,9 @@ from urllib.parse import parse_qs, urlparse
 ROOT = Path(__file__).parent
 DB_PATH = ROOT / "mailchat.db"
 STATIC_DIR = ROOT / "static"
-
 DB_LOCK = threading.Lock()
+
+NOREPLY_RE = re.compile(r"(?i)(^|[._-])(no[._-]?reply|noreply|do[._-]?not[._-]?reply|mailer-daemon|newsletter|marketing)([._-]|$)")
 
 
 def utc_now_iso() -> str:
@@ -38,6 +42,7 @@ def init_db() -> None:
                 smtp_port INTEGER NOT NULL,
                 password TEXT NOT NULL,
                 use_ssl INTEGER NOT NULL DEFAULT 1,
+                smtp_security TEXT NOT NULL DEFAULT 'auto',
                 created_at TEXT NOT NULL
             )
             """
@@ -51,6 +56,7 @@ def init_db() -> None:
                 direction TEXT NOT NULL CHECK(direction IN ('inbound', 'outbound')),
                 subject TEXT,
                 body TEXT NOT NULL,
+                body_html TEXT,
                 sent_at TEXT NOT NULL,
                 external_message_id TEXT,
                 created_at TEXT NOT NULL,
@@ -59,6 +65,12 @@ def init_db() -> None:
             )
             """
         )
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(accounts)").fetchall()}
+        if "smtp_security" not in cols:
+            conn.execute("ALTER TABLE accounts ADD COLUMN smtp_security TEXT NOT NULL DEFAULT 'auto'")
+        mcols = {row[1] for row in conn.execute("PRAGMA table_info(messages)").fetchall()}
+        if "body_html" not in mcols:
+            conn.execute("ALTER TABLE messages ADD COLUMN body_html TEXT")
 
 
 def db_fetch_all(query: str, params=()):
@@ -86,22 +98,105 @@ def json_response(handler: BaseHTTPRequestHandler, data, status=200):
 def parse_json_body(handler: BaseHTTPRequestHandler):
     length = int(handler.headers.get("Content-Length", "0"))
     raw = handler.rfile.read(length)
-    if not raw:
-        return {}
-    return json.loads(raw)
+    return json.loads(raw) if raw else {}
 
 
-def extract_text_body(msg) -> str:
+def decode_payload(part) -> str:
+    payload = part.get_payload(decode=True) or b""
+    charset = part.get_content_charset() or "utf-8"
+    return payload.decode(charset, errors="replace").strip()
+
+
+def extract_bodies(msg) -> tuple[str, str | None]:
+    text = ""
+    html = None
     if msg.is_multipart():
         for part in msg.walk():
-            if part.get_content_type() == "text/plain" and "attachment" not in (part.get("Content-Disposition") or ""):
-                payload = part.get_payload(decode=True) or b""
-                charset = part.get_content_charset() or "utf-8"
-                return payload.decode(charset, errors="replace").strip()
-        return ""
-    payload = msg.get_payload(decode=True) or b""
-    charset = msg.get_content_charset() or "utf-8"
-    return payload.decode(charset, errors="replace").strip()
+            ctype = part.get_content_type()
+            dispo = part.get("Content-Disposition") or ""
+            if "attachment" in dispo.lower():
+                continue
+            if ctype == "text/plain" and not text:
+                text = decode_payload(part)
+            elif ctype == "text/html" and not html:
+                html = decode_payload(part)
+    else:
+        ctype = msg.get_content_type()
+        if ctype == "text/html":
+            html = decode_payload(msg)
+        else:
+            text = decode_payload(msg)
+    if not text and html:
+        text = re.sub(r"<[^>]+>", " ", html)
+        text = re.sub(r"\s+", " ", text).strip()
+    return text, html
+
+
+def get_sender_email(from_header: str) -> str:
+    if "<" in from_header and ">" in from_header:
+        return from_header.split("<")[-1].split(">")[0].strip().lower()
+    return from_header.strip().lower()
+
+
+def should_skip_message(sender: str, subject: str, msg) -> bool:
+    sender_l = sender.lower()
+    subject_l = (subject or "").lower()
+    list_id = (msg.get("List-ID") or "").lower()
+    precedence = (msg.get("Precedence") or "").lower()
+    auto_sub = (msg.get("Auto-Submitted") or "").lower()
+
+    if NOREPLY_RE.search(sender_l):
+        return True
+    if any(k in subject_l for k in ["newsletter", "angebot", "sale", "rabatt", "unsubscribe", "werbung", "promo"]):
+        return True
+    if list_id or precedence in {"bulk", "list", "junk"} or auto_sub not in {"", "no"}:
+        return True
+    return False
+
+
+def smtp_send_with_security(account, msg: EmailMessage):
+    security = (account.get("smtp_security") or "auto").lower()
+    host = account["smtp_host"]
+    port = int(account["smtp_port"])
+
+    def send_ssl():
+        with smtplib.SMTP_SSL(host, port, timeout=20) as server:
+            server.login(account["email"], account["password"])
+            server.send_message(msg)
+
+    def send_starttls():
+        with smtplib.SMTP(host, port, timeout=20) as server:
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
+            server.login(account["email"], account["password"])
+            server.send_message(msg)
+
+    def send_plain():
+        with smtplib.SMTP(host, port, timeout=20) as server:
+            server.login(account["email"], account["password"])
+            server.send_message(msg)
+
+    if security == "ssl":
+        return send_ssl()
+    if security == "starttls":
+        return send_starttls()
+    if security == "plain":
+        return send_plain()
+
+    # auto: robust fallback for WRONG_VERSION_NUMBER and provider differences
+    if port == 465:
+        methods = [send_ssl, send_starttls, send_plain]
+    else:
+        methods = [send_starttls, send_ssl, send_plain]
+    last_error = None
+    for method in methods:
+        try:
+            return method()
+        except (ssl.SSLError, smtplib.SMTPException, OSError) as err:
+            last_error = err
+            continue
+    raise ValueError(f"SMTP Versand fehlgeschlagen: {last_error}")
 
 
 def sync_account(account_id: int):
@@ -118,19 +213,19 @@ def sync_account(account_id: int):
         if status != "OK":
             return 0
         saved = 0
-        for msg_id in msg_ids[0].split()[-150:]:
+        for msg_id in msg_ids[0].split()[-200:]:
             status, payload = client.fetch(msg_id, "(RFC822)")
             if status != "OK" or not payload or payload[0] is None:
                 continue
-            raw = payload[0][1]
-            msg = message_from_bytes(raw)
-            from_addr = msg.get("From", "")
-            sender = from_addr.split("<")[-1].replace(">", "").strip() if "@" in from_addr else from_addr
-            if sender.lower() == account["email"].lower():
+            msg = message_from_bytes(payload[0][1])
+            sender = get_sender_email(msg.get("From", ""))
+            if not sender or sender == account["email"].lower():
                 continue
-            ext_id = msg.get("Message-ID")
-            body = extract_text_body(msg)
-            if not body:
+            subject = msg.get("Subject", "")
+            if should_skip_message(sender, subject, msg):
+                continue
+            body, body_html = extract_bodies(msg)
+            if not body and not body_html:
                 continue
             try:
                 sent_at = parsedate_to_datetime(msg.get("Date")).astimezone(timezone.utc).isoformat()
@@ -139,10 +234,10 @@ def sync_account(account_id: int):
             try:
                 db_execute(
                     """
-                    INSERT INTO messages(account_id, contact_email, direction, subject, body, sent_at, external_message_id, created_at)
-                    VALUES (?, ?, 'inbound', ?, ?, ?, ?, ?)
+                    INSERT INTO messages(account_id, contact_email, direction, subject, body, body_html, sent_at, external_message_id, created_at)
+                    VALUES (?, ?, 'inbound', ?, ?, ?, ?, ?, ?)
                     """,
-                    (account_id, sender, msg.get("Subject", ""), body, sent_at, ext_id, utc_now_iso()),
+                    (account_id, sender, subject, body or "", body_html, sent_at, msg.get("Message-ID"), utc_now_iso()),
                 )
                 saved += 1
             except sqlite3.IntegrityError:
@@ -155,7 +250,7 @@ def sync_account(account_id: int):
             pass
 
 
-def send_message(account_id: int, to_email: str, body: str):
+def send_message(account_id: int, to_email: str, body: str, is_html: bool = False):
     rows = db_fetch_all("SELECT * FROM accounts WHERE id = ?", (account_id,))
     if not rows:
         raise ValueError("Konto wurde nicht gefunden.")
@@ -165,26 +260,22 @@ def send_message(account_id: int, to_email: str, body: str):
     msg["From"] = account["email"]
     msg["To"] = to_email
     msg["Subject"] = "Chat-Nachricht"
-    msg.set_content(body)
-
-    if account["use_ssl"]:
-        server = smtplib.SMTP_SSL(account["smtp_host"], account["smtp_port"], timeout=20)
+    if is_html:
+        text_fallback = re.sub(r"<[^>]+>", " ", body)
+        text_fallback = re.sub(r"\s+", " ", text_fallback).strip()
+        msg.set_content(text_fallback or "HTML Nachricht")
+        msg.add_alternative(body, subtype="html")
     else:
-        server = smtplib.SMTP(account["smtp_host"], account["smtp_port"], timeout=20)
-    try:
-        if not account["use_ssl"]:
-            server.starttls()
-        server.login(account["email"], account["password"])
-        server.send_message(msg)
-    finally:
-        server.quit()
+        msg.set_content(body)
+
+    smtp_send_with_security(account, msg)
 
     db_execute(
         """
-        INSERT INTO messages(account_id, contact_email, direction, subject, body, sent_at, external_message_id, created_at)
-        VALUES (?, ?, 'outbound', 'Chat-Nachricht', ?, ?, ?, ?)
+        INSERT INTO messages(account_id, contact_email, direction, subject, body, body_html, sent_at, external_message_id, created_at)
+        VALUES (?, ?, 'outbound', 'Chat-Nachricht', ?, ?, ?, ?, ?)
         """,
-        (account_id, to_email, body, utc_now_iso(), msg["Message-ID"], utc_now_iso()),
+        (account_id, to_email, re.sub(r"<[^>]+>", " ", body).strip() if is_html else body, body if is_html else None, utc_now_iso(), msg["Message-ID"], utc_now_iso()),
     )
 
 
@@ -194,14 +285,12 @@ class AppHandler(BaseHTTPRequestHandler):
         if parsed.path in ("/", "/index.html"):
             return self.serve_file(STATIC_DIR / "index.html", "text/html; charset=utf-8")
         if parsed.path.startswith("/static/"):
-            rel = parsed.path.replace("/static/", "", 1)
-            file_path = STATIC_DIR / rel
-            return self.serve_file(file_path)
+            return self.serve_file(STATIC_DIR / parsed.path.replace("/static/", "", 1))
         if parsed.path == "/api/accounts":
-            accounts = db_fetch_all(
-                "SELECT id, name, email, imap_host, imap_port, smtp_host, smtp_port, use_ssl, created_at FROM accounts ORDER BY id DESC"
+            return json_response(
+                self,
+                db_fetch_all("SELECT id, name, email, imap_host, imap_port, smtp_host, smtp_port, use_ssl, smtp_security, created_at FROM accounts ORDER BY id DESC"),
             )
-            return json_response(self, accounts)
         if parsed.path == "/api/chats":
             params = parse_qs(parsed.query)
             account_id = int((params.get("account_id") or ["0"])[0])
@@ -224,7 +313,7 @@ class AppHandler(BaseHTTPRequestHandler):
             contact = (params.get("contact") or [""])[0]
             messages = db_fetch_all(
                 """
-                SELECT id, direction, body, sent_at
+                SELECT id, direction, body, body_html, sent_at
                 FROM messages
                 WHERE account_id = ? AND contact_email = ?
                 ORDER BY sent_at ASC, id ASC
@@ -232,12 +321,8 @@ class AppHandler(BaseHTTPRequestHandler):
                 (account_id, contact),
             )
             return json_response(self, messages)
-
-        # Fallback: bei direktem Aufruf unbekannter Pfade trotzdem die App ausliefern
-        # (verhindert ein "Not Found" auf einfachen Hosting-Plattformen).
         if not parsed.path.startswith("/api/"):
             return self.serve_file(STATIC_DIR / "index.html", "text/html; charset=utf-8")
-
         self.send_error(404, "Not Found")
 
     def do_POST(self):
@@ -251,33 +336,23 @@ class AppHandler(BaseHTTPRequestHandler):
                     return json_response(self, {"error": f"Fehlende Felder: {', '.join(missing)}"}, 400)
                 account_id = db_execute(
                     """
-                    INSERT INTO accounts(name, email, imap_host, imap_port, smtp_host, smtp_port, password, use_ssl, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO accounts(name, email, imap_host, imap_port, smtp_host, smtp_port, password, use_ssl, smtp_security, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        data["name"],
-                        data["email"],
-                        data["imap_host"],
-                        int(data["imap_port"]),
-                        data["smtp_host"],
-                        int(data["smtp_port"]),
-                        data["password"],
-                        1 if data.get("use_ssl", True) else 0,
-                        utc_now_iso(),
+                        data["name"], data["email"], data["imap_host"], int(data["imap_port"]), data["smtp_host"], int(data["smtp_port"]),
+                        data["password"], 1 if data.get("use_ssl", True) else 0, data.get("smtp_security", "auto"), utc_now_iso(),
                     ),
                 )
                 return json_response(self, {"id": account_id}, 201)
             if parsed.path == "/api/sync":
-                data = parse_json_body(self)
-                count = sync_account(int(data["account_id"]))
-                return json_response(self, {"saved": count})
+                return json_response(self, {"saved": sync_account(int(parse_json_body(self)["account_id"]))})
             if parsed.path == "/api/send":
                 data = parse_json_body(self)
-                send_message(int(data["account_id"]), data["to_email"], data["body"])
+                send_message(int(data["account_id"]), data["to_email"], data["body"], bool(data.get("is_html")))
                 return json_response(self, {"ok": True}, 201)
         except Exception as e:
             return json_response(self, {"error": str(e)}, 500)
-
         self.send_error(404, "Not Found")
 
     def serve_file(self, file_path: Path, content_type: str | None = None):
@@ -285,9 +360,7 @@ class AppHandler(BaseHTTPRequestHandler):
             return self.send_error(404, "Not Found")
         raw = file_path.read_bytes()
         if content_type is None:
-            import mimetypes
-            guessed, _ = mimetypes.guess_type(str(file_path))
-            content_type = guessed or "application/octet-stream"
+            content_type = mimetypes.guess_type(str(file_path))[0] or "application/octet-stream"
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(raw)))
@@ -297,7 +370,6 @@ class AppHandler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     init_db()
-    port = int(os.getenv("PORT", "8000"))
-    server = ThreadingHTTPServer(("0.0.0.0", port), AppHandler)
-    print(f"MailChat läuft auf http://localhost:{port}")
+    server = ThreadingHTTPServer(("0.0.0.0", int(os.getenv("PORT", "8000"))), AppHandler)
+    print("MailChat läuft auf http://localhost:8000")
     server.serve_forever()
