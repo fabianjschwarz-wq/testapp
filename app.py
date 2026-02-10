@@ -162,11 +162,16 @@ def setting_bool(settings: dict, key: str) -> bool:
 
 def json_response(handler: BaseHTTPRequestHandler, data, status=200):
     body = json.dumps(data).encode("utf-8")
-    handler.send_response(status)
-    handler.send_header("Content-Type", "application/json; charset=utf-8")
-    handler.send_header("Content-Length", str(len(body)))
-    handler.end_headers()
-    handler.wfile.write(body)
+    try:
+        handler.send_response(status)
+        handler.send_header("Content-Type", "application/json; charset=utf-8")
+        handler.send_header("Content-Length", str(len(body)))
+        handler.end_headers()
+        handler.wfile.write(body)
+    except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError, OSError):
+        # Client connection dropped before the response could be written.
+        return False
+    return True
 
 
 def parse_json_body(handler: BaseHTTPRequestHandler):
@@ -554,7 +559,10 @@ class AppHandler(BaseHTTPRequestHandler):
                         db_execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (k, str(v)))
                 return json_response(self, {"ok": True}, 200)
         except Exception as e:
-            return json_response(self, {"error": str(e)}, 500)
+            try:
+                return json_response(self, {"error": str(e)}, 500)
+            except Exception:
+                return
         self.send_error(404, "Not Found")
 
     def serve_file(self, file_path: Path, content_type: str | None = None):
@@ -566,8 +574,11 @@ class AppHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(raw)))
-        self.end_headers()
-        self.wfile.write(raw)
+        try:
+            self.end_headers()
+            self.wfile.write(raw)
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError, OSError):
+            return
 
 
 if __name__ == "__main__":

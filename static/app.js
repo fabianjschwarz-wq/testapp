@@ -7,6 +7,9 @@ const state = {
   settings: null,
   contactNames: new Map(),
   chatLastId: new Map(),
+  isSending: false,
+  isPolling: false,
+  openChatToken: 0,
 };
 
 const el = {
@@ -23,6 +26,7 @@ const el = {
   quickContactNameInput: document.getElementById('quickContactNameInput'),
   groupNameInput: document.getElementById('groupNameInput'),
   settingsDialog: document.getElementById('settingsDialog'),
+  sendButton: document.querySelector('#sendForm button[type="submit"]'),
 };
 
 async function api(path, options = {}) {
@@ -149,24 +153,28 @@ async function refreshSidebars() {
 
 async function openContactChat(email) {
   if (!email) return;
+  const token = ++state.openChatToken;
   state.activeGroup = null;
   state.activeContact = email;
   el.contactInfo.textContent = `${displayName(email)} • ${email}`;
   if (state.mobileMode) el.shell.classList.add('chat-open');
 
   const rows = await api(`/api/messages?account_id=${state.accountId}&contact=${encodeURIComponent(state.activeContact)}&since_id=0`);
+  if (token !== state.openChatToken || state.activeContact !== email) return;
   renderBubbles(rows);
   state.chatLastId.set(`contact:${state.activeContact}`, rows.at(-1)?.id || 0);
   await loadChats();
 }
 
 async function openGroupChat(groupId, name, members) {
+  const token = ++state.openChatToken;
   state.activeContact = null;
   state.activeGroup = groupId;
   el.contactInfo.textContent = `👥 ${name} • ${members} Mitglieder`;
   if (state.mobileMode) el.shell.classList.add('chat-open');
 
   const rows = await api(`/api/group_messages?account_id=${state.accountId}&group_id=${state.activeGroup}&since_id=0`);
+  if (token !== state.openChatToken || state.activeGroup !== groupId) return;
   renderBubbles(rows);
   state.chatLastId.set(`group:${state.activeGroup}`, rows.at(-1)?.id || 0);
   await loadGroups();
@@ -198,30 +206,38 @@ async function createGroup() {
 
 async function sendCurrentMessage(e) {
   e.preventDefault();
+  if (state.isSending) return;
   if (!state.accountId) return alert('Bitte zuerst ein Konto hinzufügen.');
   const body = el.messageInput.value.trim();
   if (!body) return;
   const isHtml = document.getElementById('htmlMode').checked;
+  state.isSending = true;
+  el.sendButton.disabled = true;
 
-  if (state.activeGroup) {
-    const resp = await api('/api/send_group', { method: 'POST', body: JSON.stringify({ account_id: state.accountId, group_id: state.activeGroup, body, is_html: isHtml }) });
-    if (resp.message) {
-      appendBubble(resp.message);
-      state.chatLastId.set(`group:${state.activeGroup}`, resp.message.id);
-      el.messages.scrollTop = el.messages.scrollHeight;
+  try {
+    if (state.activeGroup) {
+      const resp = await api('/api/send_group', { method: 'POST', body: JSON.stringify({ account_id: state.accountId, group_id: state.activeGroup, body, is_html: isHtml }) });
+      if (resp.message) {
+        appendBubble(resp.message);
+        state.chatLastId.set(`group:${state.activeGroup}`, resp.message.id);
+        el.messages.scrollTop = el.messages.scrollHeight;
+      }
+    } else if (state.activeContact) {
+      const resp = await api('/api/send', { method: 'POST', body: JSON.stringify({ account_id: state.accountId, to_email: state.activeContact, body, is_html: isHtml }) });
+      if (resp.message) {
+        appendBubble(resp.message);
+        state.chatLastId.set(`contact:${state.activeContact}`, resp.message.id);
+        el.messages.scrollTop = el.messages.scrollHeight;
+      }
+      await loadChats();
+    } else {
+      return alert('Bitte zuerst einen Kontakt oder eine Gruppe auswählen.');
     }
-  } else if (state.activeContact) {
-    const resp = await api('/api/send', { method: 'POST', body: JSON.stringify({ account_id: state.accountId, to_email: state.activeContact, body, is_html: isHtml }) });
-    if (resp.message) {
-      appendBubble(resp.message);
-      state.chatLastId.set(`contact:${state.activeContact}`, resp.message.id);
-      el.messages.scrollTop = el.messages.scrollHeight;
-    }
-    await loadChats();
-  } else {
-    return alert('Bitte zuerst einen Kontakt oder eine Gruppe auswählen.');
+    el.messageInput.value = '';
+  } finally {
+    state.isSending = false;
+    el.sendButton.disabled = false;
   }
-  el.messageInput.value = '';
 }
 
 async function updateActiveChatIncremental() {
@@ -251,11 +267,17 @@ async function updateActiveChatIncremental() {
 }
 
 async function pollRealtime() {
+  if (state.isPolling) return;
   if (!state.accountId) return;
-  if (asBool(state.settings?.auto_sync_enabled)) {
-    await api('/api/sync', { method: 'POST', body: JSON.stringify({ account_id: state.accountId }) });
+  state.isPolling = true;
+  try {
+    if (asBool(state.settings?.auto_sync_enabled)) {
+      await api('/api/sync', { method: 'POST', body: JSON.stringify({ account_id: state.accountId }) });
+    }
+    await updateActiveChatIncremental();
+  } finally {
+    state.isPolling = false;
   }
-  await updateActiveChatIncremental();
 }
 
 function restartPolling() {
