@@ -25,7 +25,7 @@ NOREPLY_RE = re.compile(r"(?i)(^|[._-])(no[._-]?reply|noreply|do[._-]?not[._-]?r
 PROMO_SUBJECT_RE = re.compile(r"(?i)(newsletter|angebot|sale|rabatt|unsubscribe|werbung|promo)")
 
 DEFAULT_SETTINGS = {
-    "poll_interval_ms": "2000",
+    "poll_interval_ms": "1000",
     "auto_sync_enabled": "1",
     "filter_noreply": "1",
     "filter_info_addresses": "1",
@@ -112,6 +112,13 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS sync_state (
+                account_id INTEGER PRIMARY KEY,
+                last_uid INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
             )
         """)
         cols = {row[1] for row in conn.execute("PRAGMA table_info(messages)").fetchall()}
@@ -299,28 +306,48 @@ def sync_account(account_id: int):
         raise ValueError("Konto wurde nicht gefunden.")
     settings = get_settings()
 
+    state = db_fetch_one("SELECT last_uid FROM sync_state WHERE account_id=?", (account_id,))
+    last_uid = int(state["last_uid"]) if state else 0
+
     client = imaplib.IMAP4_SSL(account["imap_host"], account["imap_port"]) if account["use_ssl"] else imaplib.IMAP4(account["imap_host"], account["imap_port"])
     try:
         client.login(account["email"], account["password"])
         client.select("INBOX")
-        status, msg_ids = client.search(None, "ALL")
+
+        uid_range = f"{last_uid + 1}:*" if last_uid > 0 else "1:*"
+        status, uid_data = client.uid("search", None, f"UID {uid_range}")
         if status != "OK":
             return 0
+        uids = [u for u in (uid_data[0] or b"").split() if u]
+        if not uids:
+            return 0
+
         saved = 0
-        for msg_id in msg_ids[0].split()[-300:]:
-            status, payload = client.fetch(msg_id, "(RFC822)")
+        max_uid = last_uid
+        for uid in uids[-200:]:
+            uid_int = int(uid)
+            if uid_int > max_uid:
+                max_uid = uid_int
+            status, payload = client.uid("fetch", uid, "(RFC822)")
             if status != "OK" or not payload or payload[0] is None:
                 continue
-            msg = message_from_bytes(payload[0][1])
+            raw = payload[0][1] if isinstance(payload[0], tuple) else None
+            if not raw:
+                continue
+
+            msg = message_from_bytes(raw)
             sender, sender_name = parse_from_header(msg.get("From", ""))
             if not sender or sender == account["email"].lower():
                 continue
+
             subject = msg.get("Subject", "")
             if should_skip_message(sender, subject, msg, settings):
                 continue
+
             body, body_html = extract_bodies(msg, strip_replies=setting_bool(settings, "strip_replies"))
             if not body and not body_html:
                 continue
+
             try:
                 sent_at = parsedate_to_datetime(msg.get("Date")).astimezone(timezone.utc).isoformat()
             except Exception:
@@ -338,6 +365,11 @@ def sync_account(account_id: int):
                 saved += 1
             except sqlite3.IntegrityError:
                 continue
+
+        db_execute(
+            "INSERT INTO sync_state(account_id,last_uid,updated_at) VALUES(?,?,?) ON CONFLICT(account_id) DO UPDATE SET last_uid=excluded.last_uid, updated_at=excluded.updated_at",
+            (account_id, max_uid, utc_now_iso()),
+        )
         return saved
     finally:
         try:
@@ -350,6 +382,9 @@ def send_message(account_id: int, to_email: str, body: str, is_html: bool = Fals
     account = db_fetch_one("SELECT * FROM accounts WHERE id=?", (account_id,))
     if not account:
         raise ValueError("Konto wurde nicht gefunden.")
+
+    to_email = to_email.lower().strip()
+    now = utc_now_iso()
 
     msg = EmailMessage()
     msg["From"] = account["email"]
@@ -364,14 +399,22 @@ def send_message(account_id: int, to_email: str, body: str, is_html: bool = Fals
         msg.set_content(body)
 
     smtp_send_with_security(account, msg)
-    upsert_contact(account_id, to_email.lower().strip(), None)
-    db_execute(
+    upsert_contact(account_id, to_email, None)
+
+    msg_id = db_execute(
         """
         INSERT INTO messages(account_id, contact_email, direction, subject, body, body_html, sent_at, external_message_id, created_at)
         VALUES (?, ?, 'outbound', 'Chat-Nachricht', ?, ?, ?, ?, ?)
         """,
-        (account_id, to_email.lower().strip(), re.sub(r"<[^>]+>", " ", body).strip() if is_html else body, body if is_html else None, utc_now_iso(), msg["Message-ID"], utc_now_iso()),
+        (account_id, to_email, re.sub(r"<[^>]+>", " ", body).strip() if is_html else body, body if is_html else None, now, msg["Message-ID"], now),
     )
+    return {
+        "id": msg_id,
+        "direction": "outbound",
+        "body": re.sub(r"<[^>]+>", " ", body).strip() if is_html else body,
+        "body_html": body if is_html else None,
+        "sent_at": now,
+    }
 
 
 def send_group_message(account_id: int, group_id: int, body: str, is_html=False):
@@ -382,12 +425,22 @@ def send_group_message(account_id: int, group_id: int, body: str, is_html=False)
     members = db_fetch_all("SELECT email FROM group_members WHERE group_id=?", (group_id,))
     if not members:
         raise ValueError("Gruppe hat keine Mitglieder.")
+
     for m in members:
         send_message(account_id, m["email"], body, is_html)
-    db_execute(
+
+    now = utc_now_iso()
+    msg_id = db_execute(
         "INSERT INTO group_messages(account_id, group_id, direction, sender_email, body, body_html, sent_at) VALUES(?,?,'outbound',?,?,?,?)",
-        (account_id, group_id, account["email"], re.sub(r"<[^>]+>", " ", body).strip() if is_html else body, body if is_html else None, utc_now_iso()),
+        (account_id, group_id, account["email"], re.sub(r"<[^>]+>", " ", body).strip() if is_html else body, body if is_html else None, now),
     )
+    return {
+        "id": msg_id,
+        "direction": "outbound",
+        "body": re.sub(r"<[^>]+>", " ", body).strip() if is_html else body,
+        "body_html": body if is_html else None,
+        "sent_at": now,
+    }
 
 
 class AppHandler(BaseHTTPRequestHandler):
@@ -419,7 +472,8 @@ class AppHandler(BaseHTTPRequestHandler):
             params = parse_qs(parsed.query)
             account_id = int((params.get("account_id") or ["0"])[0])
             group_id = int((params.get("group_id") or ["0"])[0])
-            rows = db_fetch_all("SELECT id, direction, body, body_html, sent_at, sender_email FROM group_messages WHERE account_id=? AND group_id=? ORDER BY sent_at ASC,id ASC", (account_id, group_id))
+            since_id = int((params.get("since_id") or ["0"])[0])
+            rows = db_fetch_all("SELECT id, direction, body, body_html, sent_at, sender_email FROM group_messages WHERE account_id=? AND group_id=? AND id>? ORDER BY sent_at ASC,id ASC", (account_id, group_id, since_id))
             return json_response(self, rows)
         if parsed.path == "/api/chats":
             account_id = int((parse_qs(parsed.query).get("account_id") or ["0"])[0])
@@ -442,15 +496,16 @@ class AppHandler(BaseHTTPRequestHandler):
             params = parse_qs(parsed.query)
             account_id = int((params.get("account_id") or ["0"])[0])
             contact = (params.get("contact") or [""])[0].lower().strip()
+            since_id = int((params.get("since_id") or ["0"])[0])
             rows = db_fetch_all(
                 """
                 SELECT m.id, m.direction, m.body, m.body_html, m.sent_at, COALESCE(c.display_name, m.contact_email) AS display_name
                 FROM messages m
                 LEFT JOIN contacts c ON c.account_id=m.account_id AND c.email=m.contact_email
-                WHERE m.account_id=? AND m.contact_email=?
+                WHERE m.account_id=? AND m.contact_email=? AND m.id>?
                 ORDER BY m.sent_at ASC, m.id ASC
                 """,
-                (account_id, contact),
+                (account_id, contact, since_id),
             )
             return json_response(self, rows)
 
@@ -476,12 +531,12 @@ class AppHandler(BaseHTTPRequestHandler):
                 return json_response(self, {"saved": sync_account(int(parse_json_body(self)["account_id"]))})
             if parsed.path == "/api/send":
                 data = parse_json_body(self)
-                send_message(int(data["account_id"]), data["to_email"], data["body"], bool(data.get("is_html")))
-                return json_response(self, {"ok": True}, 201)
+                message = send_message(int(data["account_id"]), data["to_email"], data["body"], bool(data.get("is_html")))
+                return json_response(self, {"ok": True, "message": message}, 201)
             if parsed.path == "/api/send_group":
                 data = parse_json_body(self)
-                send_group_message(int(data["account_id"]), int(data["group_id"]), data["body"], bool(data.get("is_html")))
-                return json_response(self, {"ok": True}, 201)
+                message = send_group_message(int(data["account_id"]), int(data["group_id"]), data["body"], bool(data.get("is_html")))
+                return json_response(self, {"ok": True, "message": message}, 201)
             if parsed.path == "/api/contacts":
                 data = parse_json_body(self)
                 upsert_contact(int(data["account_id"]), data["email"].lower().strip(), data.get("display_name") or None)

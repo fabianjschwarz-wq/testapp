@@ -52,15 +52,39 @@ function displayName(email) {
   return state.contactNames.get(email) || email;
 }
 
+function setModeLabel() {
+  el.modeSwitchBtn.textContent = state.mobileMode ? '🖥️ Desktop' : '📱 Mobile';
+}
+
+function appendBubble(msg) {
+  const bubble = document.createElement('article');
+  bubble.className = `bubble ${msg.direction}`;
+  const content = document.createElement('div');
+  content.className = 'content';
+  if (msg.body_html) content.innerHTML = sanitizeHtml(msg.body_html);
+  else content.textContent = msg.body;
+  const meta = document.createElement('time');
+  meta.className = 'meta';
+  meta.textContent = fmt(msg.sent_at);
+  bubble.append(content, meta);
+  el.messages.append(bubble);
+}
+
+function renderBubbles(rows) {
+  el.messages.innerHTML = '';
+  rows.forEach(appendBubble);
+  el.messages.scrollTop = el.messages.scrollHeight;
+}
+
 async function loadSettings() {
   state.settings = await api('/api/settings');
-  const form = document.getElementById('settingsForm');
-  form.poll_interval_ms.value = state.settings.poll_interval_ms || 2000;
-  form.auto_sync_enabled.checked = asBool(state.settings.auto_sync_enabled);
-  form.filter_noreply.checked = asBool(state.settings.filter_noreply);
-  form.filter_info_addresses.checked = asBool(state.settings.filter_info_addresses);
-  form.filter_promotions.checked = asBool(state.settings.filter_promotions);
-  form.strip_replies.checked = asBool(state.settings.strip_replies);
+  const f = document.getElementById('settingsForm');
+  f.poll_interval_ms.value = state.settings.poll_interval_ms || 1000;
+  f.auto_sync_enabled.checked = asBool(state.settings.auto_sync_enabled);
+  f.filter_noreply.checked = asBool(state.settings.filter_noreply);
+  f.filter_info_addresses.checked = asBool(state.settings.filter_info_addresses);
+  f.filter_promotions.checked = asBool(state.settings.filter_promotions);
+  f.strip_replies.checked = asBool(state.settings.strip_replies);
   restartPolling();
 }
 
@@ -81,7 +105,7 @@ async function loadAccounts() {
   });
   if (!state.accountId) state.accountId = Number(accounts[0].id);
   el.accountSelect.value = String(state.accountId);
-  await Promise.all([loadContacts(), loadChats(), loadGroups()]);
+  await refreshSidebars();
 }
 
 async function loadContacts() {
@@ -97,10 +121,9 @@ async function loadChats() {
   el.chatList.innerHTML = '';
   chats.forEach((chat) => {
     const li = document.createElement('li');
-    const active = state.activeContact === chat.contact_email && !state.activeGroup;
-    li.className = active ? 'active' : '';
+    li.className = state.activeContact === chat.contact_email && !state.activeGroup ? 'active' : '';
     li.innerHTML = `<strong>${chat.display_name}</strong><div class="preview">${(chat.last_body || '').slice(0, 80)}</div>`;
-    li.onclick = () => openContactChat(chat.contact_email);
+    li.onclick = async () => { await openContactChat(chat.contact_email); };
     el.chatList.append(li);
   });
 }
@@ -111,71 +134,42 @@ async function loadGroups() {
   el.groupList.innerHTML = '';
   groups.forEach((g) => {
     const li = document.createElement('li');
-    const active = state.activeGroup === g.id;
-    li.className = active ? 'active' : '';
+    li.className = state.activeGroup === g.id ? 'active' : '';
     li.innerHTML = `<strong>👥 ${g.name}</strong><div class="preview">${g.members} Mitglieder</div>`;
-    li.onclick = () => openGroupChat(g.id, g.name, g.members);
+    li.onclick = async () => { await openGroupChat(g.id, g.name, g.members); };
     el.groupList.append(li);
   });
 }
 
-function openContactChat(email) {
+async function refreshSidebars() {
+  await loadContacts();
+  await loadChats();
+  await loadGroups();
+}
+
+async function openContactChat(email) {
+  if (!email) return;
   state.activeGroup = null;
   state.activeContact = email;
   el.contactInfo.textContent = `${displayName(email)} • ${email}`;
   if (state.mobileMode) el.shell.classList.add('chat-open');
-  loadMessages();
-  loadChats();
+
+  const rows = await api(`/api/messages?account_id=${state.accountId}&contact=${encodeURIComponent(state.activeContact)}&since_id=0`);
+  renderBubbles(rows);
+  state.chatLastId.set(`contact:${state.activeContact}`, rows.at(-1)?.id || 0);
+  await loadChats();
 }
 
-function openGroupChat(groupId, name, members) {
+async function openGroupChat(groupId, name, members) {
   state.activeContact = null;
   state.activeGroup = groupId;
   el.contactInfo.textContent = `👥 ${name} • ${members} Mitglieder`;
   if (state.mobileMode) el.shell.classList.add('chat-open');
-  loadGroupMessages();
-  loadGroups();
-}
 
-function renderBubbles(rows) {
-  el.messages.innerHTML = '';
-  rows.forEach((msg) => {
-    const bubble = document.createElement('article');
-    bubble.className = `bubble ${msg.direction}`;
-    const content = document.createElement('div');
-    content.className = 'content';
-    if (msg.body_html) content.innerHTML = sanitizeHtml(msg.body_html);
-    else content.textContent = msg.body;
-    const meta = document.createElement('time');
-    meta.className = 'meta';
-    meta.textContent = fmt(msg.sent_at);
-    bubble.append(content, meta);
-    el.messages.append(bubble);
-  });
-  el.messages.scrollTop = el.messages.scrollHeight;
-}
-
-async function loadMessages() {
-  if (!state.accountId || !state.activeContact) {
-    el.messages.innerHTML = '<p class="empty">Wähle links einen Kontakt oder eine Gruppe.</p>';
-    return;
-  }
-  const rows = await api(`/api/messages?account_id=${state.accountId}&contact=${encodeURIComponent(state.activeContact)}`);
+  const rows = await api(`/api/group_messages?account_id=${state.accountId}&group_id=${state.activeGroup}&since_id=0`);
   renderBubbles(rows);
-  const last = rows.at(-1)?.id || 0;
-  const key = `contact:${state.activeContact}`;
-  const prev = state.chatLastId.get(key) || 0;
-  if (last > prev && prev > 0) {
-    const newInbound = rows.filter((r) => r.id > prev && r.direction === 'inbound');
-    newInbound.forEach((r) => notify(`${displayName(state.activeContact)}`, r.body));
-  }
-  state.chatLastId.set(key, last);
-}
-
-async function loadGroupMessages() {
-  if (!state.accountId || !state.activeGroup) return;
-  const rows = await api(`/api/group_messages?account_id=${state.accountId}&group_id=${state.activeGroup}`);
-  renderBubbles(rows);
+  state.chatLastId.set(`group:${state.activeGroup}`, rows.at(-1)?.id || 0);
+  await loadGroups();
 }
 
 async function addContactAndOpen() {
@@ -186,8 +180,8 @@ async function addContactAndOpen() {
   await api('/api/contacts', { method: 'POST', body: JSON.stringify({ account_id: state.accountId, email, display_name: name }) });
   el.quickContactInput.value = '';
   el.quickContactNameInput.value = '';
-  await loadContacts();
-  openContactChat(email);
+  await refreshSidebars();
+  await openContactChat(email);
 }
 
 async function createGroup() {
@@ -198,8 +192,8 @@ async function createGroup() {
   const members = (membersCsv || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
   const created = await api('/api/groups', { method: 'POST', body: JSON.stringify({ account_id: state.accountId, name, members }) });
   el.groupNameInput.value = '';
-  await loadGroups();
-  openGroupChat(created.id, name, members.length);
+  await refreshSidebars();
+  await openGroupChat(created.id, name, members.length);
 }
 
 async function sendCurrentMessage(e) {
@@ -210,11 +204,19 @@ async function sendCurrentMessage(e) {
   const isHtml = document.getElementById('htmlMode').checked;
 
   if (state.activeGroup) {
-    await api('/api/send_group', { method: 'POST', body: JSON.stringify({ account_id: state.accountId, group_id: state.activeGroup, body, is_html: isHtml }) });
-    await loadGroupMessages();
+    const resp = await api('/api/send_group', { method: 'POST', body: JSON.stringify({ account_id: state.accountId, group_id: state.activeGroup, body, is_html: isHtml }) });
+    if (resp.message) {
+      appendBubble(resp.message);
+      state.chatLastId.set(`group:${state.activeGroup}`, resp.message.id);
+      el.messages.scrollTop = el.messages.scrollHeight;
+    }
   } else if (state.activeContact) {
-    await api('/api/send', { method: 'POST', body: JSON.stringify({ account_id: state.accountId, to_email: state.activeContact, body, is_html: isHtml }) });
-    await loadMessages();
+    const resp = await api('/api/send', { method: 'POST', body: JSON.stringify({ account_id: state.accountId, to_email: state.activeContact, body, is_html: isHtml }) });
+    if (resp.message) {
+      appendBubble(resp.message);
+      state.chatLastId.set(`contact:${state.activeContact}`, resp.message.id);
+      el.messages.scrollTop = el.messages.scrollHeight;
+    }
     await loadChats();
   } else {
     return alert('Bitte zuerst einen Kontakt oder eine Gruppe auswählen.');
@@ -222,26 +224,44 @@ async function sendCurrentMessage(e) {
   el.messageInput.value = '';
 }
 
+async function updateActiveChatIncremental() {
+  if (!state.accountId) return;
+
+  if (state.activeContact) {
+    const key = `contact:${state.activeContact}`;
+    const since = state.chatLastId.get(key) || 0;
+    const rows = await api(`/api/messages?account_id=${state.accountId}&contact=${encodeURIComponent(state.activeContact)}&since_id=${since}`);
+    if (rows.length) {
+      rows.forEach(appendBubble);
+      state.chatLastId.set(key, rows.at(-1).id);
+      el.messages.scrollTop = el.messages.scrollHeight;
+      rows.filter((r) => r.direction === 'inbound').forEach((r) => notify(displayName(state.activeContact), r.body));
+      await loadChats();
+    }
+  } else if (state.activeGroup) {
+    const key = `group:${state.activeGroup}`;
+    const since = state.chatLastId.get(key) || 0;
+    const rows = await api(`/api/group_messages?account_id=${state.accountId}&group_id=${state.activeGroup}&since_id=${since}`);
+    if (rows.length) {
+      rows.forEach(appendBubble);
+      state.chatLastId.set(key, rows.at(-1).id);
+      el.messages.scrollTop = el.messages.scrollHeight;
+    }
+  }
+}
+
 async function pollRealtime() {
   if (!state.accountId) return;
   if (asBool(state.settings?.auto_sync_enabled)) {
     await api('/api/sync', { method: 'POST', body: JSON.stringify({ account_id: state.accountId }) });
   }
-  await loadContacts();
-  await loadChats();
-  await loadGroups();
-  if (state.activeGroup) await loadGroupMessages();
-  else if (state.activeContact) await loadMessages();
+  await updateActiveChatIncremental();
 }
 
 function restartPolling() {
   if (state.pollingHandle) clearInterval(state.pollingHandle);
-  const ms = Math.max(500, Number(state.settings?.poll_interval_ms || 2000));
+  const ms = Math.max(500, Number(state.settings?.poll_interval_ms || 1000));
   state.pollingHandle = setInterval(() => pollRealtime().catch(() => {}), ms);
-}
-
-function setModeLabel() {
-  el.modeSwitchBtn.textContent = state.mobileMode ? '🖥️ Desktop' : '📱 Mobile';
 }
 
 async function ensureNotificationPermission() {
@@ -282,11 +302,17 @@ function bindUi() {
     state.activeContact = null;
     state.activeGroup = null;
     state.chatLastId.clear();
-    await Promise.all([loadContacts(), loadChats(), loadGroups()]);
+    await refreshSidebars();
     el.messages.innerHTML = '<p class="empty">Wähle links einen Kontakt oder eine Gruppe.</p>';
   };
 
-  document.getElementById('syncBtn').onclick = () => pollRealtime();
+  document.getElementById('syncBtn').onclick = async () => {
+    if (!state.accountId) return;
+    await api('/api/sync', { method: 'POST', body: JSON.stringify({ account_id: state.accountId }) });
+    await refreshSidebars();
+    await updateActiveChatIncremental();
+  };
+
   document.getElementById('quickAddContactBtn').onclick = addContactAndOpen;
   document.getElementById('createGroupBtn').onclick = createGroup;
   document.getElementById('sendForm').addEventListener('submit', sendCurrentMessage);
@@ -313,7 +339,7 @@ function bindUi() {
     await api('/api/settings', {
       method: 'POST',
       body: JSON.stringify({
-        poll_interval_ms: Number(f.get('poll_interval_ms') || 2000),
+        poll_interval_ms: Number(f.get('poll_interval_ms') || 1000),
         auto_sync_enabled: f.get('auto_sync_enabled') === 'on' ? '1' : '0',
         filter_noreply: f.get('filter_noreply') === 'on' ? '1' : '0',
         filter_info_addresses: f.get('filter_info_addresses') === 'on' ? '1' : '0',
@@ -330,7 +356,10 @@ function bindUi() {
 
 Promise.all([ensureNotificationPermission(), loadSettings()])
   .then(() => loadAccounts())
-  .then(() => bindUi())
+  .then(() => {
+    bindUi();
+    setModeLabel();
+  })
   .catch((err) => {
     el.messages.innerHTML = `<p class="empty">Fehler: ${err.message}</p>`;
   });
