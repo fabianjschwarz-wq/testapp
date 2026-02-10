@@ -9,7 +9,7 @@ import threading
 from datetime import datetime, timezone
 from email import message_from_bytes
 from email.message import EmailMessage
-from email.utils import parsedate_to_datetime
+from email.utils import getaddresses, parsedate_to_datetime
 import imaplib
 import smtplib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -22,6 +22,16 @@ STATIC_DIR = ROOT / "static"
 DB_LOCK = threading.Lock()
 
 NOREPLY_RE = re.compile(r"(?i)(^|[._-])(no[._-]?reply|noreply|do[._-]?not[._-]?reply|mailer-daemon|newsletter|marketing)([._-]|$)")
+PROMO_SUBJECT_RE = re.compile(r"(?i)(newsletter|angebot|sale|rabatt|unsubscribe|werbung|promo)")
+
+DEFAULT_SETTINGS = {
+    "poll_interval_ms": "2000",
+    "auto_sync_enabled": "1",
+    "filter_noreply": "1",
+    "filter_info_addresses": "1",
+    "filter_promotions": "1",
+    "strip_replies": "1",
+}
 
 
 def utc_now_iso() -> str:
@@ -30,8 +40,7 @@ def utc_now_iso() -> str:
 
 def init_db() -> None:
     with DB_LOCK, sqlite3.connect(DB_PATH) as conn:
-        conn.execute(
-            """
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS accounts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
@@ -45,10 +54,46 @@ def init_db() -> None:
                 smtp_security TEXT NOT NULL DEFAULT 'auto',
                 created_at TEXT NOT NULL
             )
-            """
-        )
-        conn.execute(
-            """
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS contacts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id INTEGER NOT NULL,
+                email TEXT NOT NULL,
+                display_name TEXT,
+                UNIQUE(account_id, email)
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS chat_groups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(account_id, name)
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS group_members (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id INTEGER NOT NULL,
+                email TEXT NOT NULL,
+                UNIQUE(group_id, email)
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS group_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id INTEGER NOT NULL,
+                group_id INTEGER NOT NULL,
+                direction TEXT NOT NULL CHECK(direction IN ('inbound', 'outbound')),
+                sender_email TEXT,
+                body TEXT NOT NULL,
+                body_html TEXT,
+                sent_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 account_id INTEGER NOT NULL,
@@ -60,17 +105,23 @@ def init_db() -> None:
                 sent_at TEXT NOT NULL,
                 external_message_id TEXT,
                 created_at TEXT NOT NULL,
-                UNIQUE(account_id, external_message_id),
-                FOREIGN KEY(account_id) REFERENCES accounts(id)
+                UNIQUE(account_id, external_message_id)
             )
-            """
-        )
-        cols = {row[1] for row in conn.execute("PRAGMA table_info(accounts)").fetchall()}
-        if "smtp_security" not in cols:
-            conn.execute("ALTER TABLE accounts ADD COLUMN smtp_security TEXT NOT NULL DEFAULT 'auto'")
-        mcols = {row[1] for row in conn.execute("PRAGMA table_info(messages)").fetchall()}
-        if "body_html" not in mcols:
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        """)
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(messages)").fetchall()}
+        if "body_html" not in cols:
             conn.execute("ALTER TABLE messages ADD COLUMN body_html TEXT")
+        ac_cols = {row[1] for row in conn.execute("PRAGMA table_info(accounts)").fetchall()}
+        if "smtp_security" not in ac_cols:
+            conn.execute("ALTER TABLE accounts ADD COLUMN smtp_security TEXT NOT NULL DEFAULT 'auto'")
+        for k, v in DEFAULT_SETTINGS.items():
+            conn.execute("INSERT OR IGNORE INTO settings(key, value) VALUES(?,?)", (k, v))
 
 
 def db_fetch_all(query: str, params=()):
@@ -79,11 +130,27 @@ def db_fetch_all(query: str, params=()):
         return [dict(r) for r in conn.execute(query, params).fetchall()]
 
 
+def db_fetch_one(query: str, params=()):
+    rows = db_fetch_all(query, params)
+    return rows[0] if rows else None
+
+
 def db_execute(query: str, params=()):
     with DB_LOCK, sqlite3.connect(DB_PATH) as conn:
         cur = conn.execute(query, params)
         conn.commit()
         return cur.lastrowid
+
+
+def get_settings() -> dict:
+    settings = {r["key"]: r["value"] for r in db_fetch_all("SELECT key, value FROM settings")}
+    merged = dict(DEFAULT_SETTINGS)
+    merged.update(settings)
+    return merged
+
+
+def setting_bool(settings: dict, key: str) -> bool:
+    return str(settings.get(key, "0")).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def json_response(handler: BaseHTTPRequestHandler, data, status=200):
@@ -107,51 +174,83 @@ def decode_payload(part) -> str:
     return payload.decode(charset, errors="replace").strip()
 
 
-def extract_bodies(msg) -> tuple[str, str | None]:
+def strip_quoted_text(text: str) -> str:
+    lines = text.splitlines()
+    cut_tokens = [
+        r"^On .+wrote:$",
+        r"^Am .+schrieb.+:$",
+        r"^From:\s",
+        r"^Von:\s",
+        r"^>+",
+        r"^-{2,}\s*Original Message\s*-{2,}",
+    ]
+    for i, line in enumerate(lines):
+        if any(re.search(pat, line.strip(), re.IGNORECASE) for pat in cut_tokens):
+            lines = lines[:i]
+            break
+    cleaned = "\n".join(lines).strip()
+    return cleaned
+
+
+def extract_bodies(msg, strip_replies=True) -> tuple[str, str | None]:
     text = ""
     html = None
     if msg.is_multipart():
         for part in msg.walk():
             ctype = part.get_content_type()
-            dispo = part.get("Content-Disposition") or ""
-            if "attachment" in dispo.lower():
+            dispo = (part.get("Content-Disposition") or "").lower()
+            if "attachment" in dispo:
                 continue
             if ctype == "text/plain" and not text:
                 text = decode_payload(part)
-            elif ctype == "text/html" and not html:
+            elif ctype in {"text/html", "application/xhtml+xml"} and not html:
                 html = decode_payload(part)
     else:
         ctype = msg.get_content_type()
-        if ctype == "text/html":
+        if ctype in {"text/html", "application/xhtml+xml"}:
             html = decode_payload(msg)
         else:
             text = decode_payload(msg)
+
     if not text and html:
         text = re.sub(r"<[^>]+>", " ", html)
         text = re.sub(r"\s+", " ", text).strip()
+    if strip_replies and text:
+        text = strip_quoted_text(text)
     return text, html
 
 
-def get_sender_email(from_header: str) -> str:
-    if "<" in from_header and ">" in from_header:
-        return from_header.split("<")[-1].split(">")[0].strip().lower()
-    return from_header.strip().lower()
+def parse_from_header(from_header: str) -> tuple[str, str | None]:
+    parsed = getaddresses([from_header])
+    if parsed and parsed[0][1]:
+        name, addr = parsed[0]
+        return addr.lower().strip(), (name.strip() or None)
+    return from_header.lower().strip(), None
 
 
-def should_skip_message(sender: str, subject: str, msg) -> bool:
-    sender_l = sender.lower()
+def should_skip_message(sender: str, subject: str, msg, settings: dict) -> bool:
+    sender_l = sender.lower().strip()
     subject_l = (subject or "").lower()
     list_id = (msg.get("List-ID") or "").lower()
     precedence = (msg.get("Precedence") or "").lower()
     auto_sub = (msg.get("Auto-Submitted") or "").lower()
 
-    if NOREPLY_RE.search(sender_l):
+    if setting_bool(settings, "filter_noreply") and NOREPLY_RE.search(sender_l):
         return True
-    if any(k in subject_l for k in ["newsletter", "angebot", "sale", "rabatt", "unsubscribe", "werbung", "promo"]):
+    if setting_bool(settings, "filter_info_addresses") and sender_l.startswith("info@"):
         return True
-    if list_id or precedence in {"bulk", "list", "junk"} or auto_sub not in {"", "no"}:
-        return True
+    if setting_bool(settings, "filter_promotions"):
+        if PROMO_SUBJECT_RE.search(subject_l):
+            return True
+        if list_id or precedence in {"bulk", "list", "junk"} or auto_sub not in {"", "no"}:
+            return True
     return False
+
+
+def upsert_contact(account_id: int, email: str, display_name: str | None = None):
+    db_execute("INSERT OR IGNORE INTO contacts(account_id, email, display_name) VALUES(?,?,?)", (account_id, email, display_name))
+    if display_name:
+        db_execute("UPDATE contacts SET display_name=? WHERE account_id=? AND email=?", (display_name, account_id, email))
 
 
 def smtp_send_with_security(account, msg: EmailMessage):
@@ -184,26 +283,21 @@ def smtp_send_with_security(account, msg: EmailMessage):
     if security == "plain":
         return send_plain()
 
-    # auto: robust fallback for WRONG_VERSION_NUMBER and provider differences
-    if port == 465:
-        methods = [send_ssl, send_starttls, send_plain]
-    else:
-        methods = [send_starttls, send_ssl, send_plain]
+    methods = [send_ssl, send_starttls, send_plain] if port == 465 else [send_starttls, send_ssl, send_plain]
     last_error = None
     for method in methods:
         try:
             return method()
         except (ssl.SSLError, smtplib.SMTPException, OSError) as err:
             last_error = err
-            continue
     raise ValueError(f"SMTP Versand fehlgeschlagen: {last_error}")
 
 
 def sync_account(account_id: int):
-    rows = db_fetch_all("SELECT * FROM accounts WHERE id = ?", (account_id,))
-    if not rows:
+    account = db_fetch_one("SELECT * FROM accounts WHERE id=?", (account_id,))
+    if not account:
         raise ValueError("Konto wurde nicht gefunden.")
-    account = rows[0]
+    settings = get_settings()
 
     client = imaplib.IMAP4_SSL(account["imap_host"], account["imap_port"]) if account["use_ssl"] else imaplib.IMAP4(account["imap_host"], account["imap_port"])
     try:
@@ -213,24 +307,26 @@ def sync_account(account_id: int):
         if status != "OK":
             return 0
         saved = 0
-        for msg_id in msg_ids[0].split()[-200:]:
+        for msg_id in msg_ids[0].split()[-300:]:
             status, payload = client.fetch(msg_id, "(RFC822)")
             if status != "OK" or not payload or payload[0] is None:
                 continue
             msg = message_from_bytes(payload[0][1])
-            sender = get_sender_email(msg.get("From", ""))
+            sender, sender_name = parse_from_header(msg.get("From", ""))
             if not sender or sender == account["email"].lower():
                 continue
             subject = msg.get("Subject", "")
-            if should_skip_message(sender, subject, msg):
+            if should_skip_message(sender, subject, msg, settings):
                 continue
-            body, body_html = extract_bodies(msg)
+            body, body_html = extract_bodies(msg, strip_replies=setting_bool(settings, "strip_replies"))
             if not body and not body_html:
                 continue
             try:
                 sent_at = parsedate_to_datetime(msg.get("Date")).astimezone(timezone.utc).isoformat()
             except Exception:
                 sent_at = utc_now_iso()
+
+            upsert_contact(account_id, sender, sender_name)
             try:
                 db_execute(
                     """
@@ -251,10 +347,9 @@ def sync_account(account_id: int):
 
 
 def send_message(account_id: int, to_email: str, body: str, is_html: bool = False):
-    rows = db_fetch_all("SELECT * FROM accounts WHERE id = ?", (account_id,))
-    if not rows:
+    account = db_fetch_one("SELECT * FROM accounts WHERE id=?", (account_id,))
+    if not account:
         raise ValueError("Konto wurde nicht gefunden.")
-    account = rows[0]
 
     msg = EmailMessage()
     msg["From"] = account["email"]
@@ -269,13 +364,29 @@ def send_message(account_id: int, to_email: str, body: str, is_html: bool = Fals
         msg.set_content(body)
 
     smtp_send_with_security(account, msg)
-
+    upsert_contact(account_id, to_email.lower().strip(), None)
     db_execute(
         """
         INSERT INTO messages(account_id, contact_email, direction, subject, body, body_html, sent_at, external_message_id, created_at)
         VALUES (?, ?, 'outbound', 'Chat-Nachricht', ?, ?, ?, ?, ?)
         """,
-        (account_id, to_email, re.sub(r"<[^>]+>", " ", body).strip() if is_html else body, body if is_html else None, utc_now_iso(), msg["Message-ID"], utc_now_iso()),
+        (account_id, to_email.lower().strip(), re.sub(r"<[^>]+>", " ", body).strip() if is_html else body, body if is_html else None, utc_now_iso(), msg["Message-ID"], utc_now_iso()),
+    )
+
+
+def send_group_message(account_id: int, group_id: int, body: str, is_html=False):
+    account = db_fetch_one("SELECT * FROM accounts WHERE id=?", (account_id,))
+    group = db_fetch_one("SELECT * FROM chat_groups WHERE id=? AND account_id=?", (group_id, account_id))
+    if not account or not group:
+        raise ValueError("Gruppe oder Konto nicht gefunden.")
+    members = db_fetch_all("SELECT email FROM group_members WHERE group_id=?", (group_id,))
+    if not members:
+        raise ValueError("Gruppe hat keine Mitglieder.")
+    for m in members:
+        send_message(account_id, m["email"], body, is_html)
+    db_execute(
+        "INSERT INTO group_messages(account_id, group_id, direction, sender_email, body, body_html, sent_at) VALUES(?,?,'outbound',?,?,?,?)",
+        (account_id, group_id, account["email"], re.sub(r"<[^>]+>", " ", body).strip() if is_html else body, body if is_html else None, utc_now_iso()),
     )
 
 
@@ -286,22 +397,42 @@ class AppHandler(BaseHTTPRequestHandler):
             return self.serve_file(STATIC_DIR / "index.html", "text/html; charset=utf-8")
         if parsed.path.startswith("/static/"):
             return self.serve_file(STATIC_DIR / parsed.path.replace("/static/", "", 1))
+
         if parsed.path == "/api/accounts":
-            return json_response(
-                self,
-                db_fetch_all("SELECT id, name, email, imap_host, imap_port, smtp_host, smtp_port, use_ssl, smtp_security, created_at FROM accounts ORDER BY id DESC"),
-            )
-        if parsed.path == "/api/chats":
+            return json_response(self, db_fetch_all("SELECT id, name, email, imap_host, imap_port, smtp_host, smtp_port, use_ssl, smtp_security, created_at FROM accounts ORDER BY id DESC"))
+        if parsed.path == "/api/settings":
+            return json_response(self, get_settings())
+        if parsed.path == "/api/contacts":
+            account_id = int((parse_qs(parsed.query).get("account_id") or ["0"])[0])
+            return json_response(self, db_fetch_all("SELECT email, COALESCE(display_name,'') AS display_name FROM contacts WHERE account_id=? ORDER BY COALESCE(display_name,email)", (account_id,)))
+        if parsed.path == "/api/groups":
+            account_id = int((parse_qs(parsed.query).get("account_id") or ["0"])[0])
+            groups = db_fetch_all("""
+                SELECT g.id, g.name, COUNT(m.id) AS members
+                FROM chat_groups g LEFT JOIN group_members m ON m.group_id=g.id
+                WHERE g.account_id=?
+                GROUP BY g.id
+                ORDER BY g.name
+            """, (account_id,))
+            return json_response(self, groups)
+        if parsed.path == "/api/group_messages":
             params = parse_qs(parsed.query)
             account_id = int((params.get("account_id") or ["0"])[0])
+            group_id = int((params.get("group_id") or ["0"])[0])
+            rows = db_fetch_all("SELECT id, direction, body, body_html, sent_at, sender_email FROM group_messages WHERE account_id=? AND group_id=? ORDER BY sent_at ASC,id ASC", (account_id, group_id))
+            return json_response(self, rows)
+        if parsed.path == "/api/chats":
+            account_id = int((parse_qs(parsed.query).get("account_id") or ["0"])[0])
             chats = db_fetch_all(
                 """
-                SELECT contact_email,
-                       MAX(sent_at) AS last_at,
-                       (SELECT body FROM messages m2 WHERE m2.account_id = m1.account_id AND m2.contact_email = m1.contact_email ORDER BY sent_at DESC, id DESC LIMIT 1) AS last_body
-                FROM messages m1
-                WHERE account_id = ?
-                GROUP BY contact_email
+                SELECT m.contact_email,
+                       COALESCE(c.display_name, m.contact_email) AS display_name,
+                       MAX(m.sent_at) AS last_at,
+                       (SELECT body FROM messages m2 WHERE m2.account_id = m.account_id AND m2.contact_email = m.contact_email ORDER BY sent_at DESC, id DESC LIMIT 1) AS last_body
+                FROM messages m
+                LEFT JOIN contacts c ON c.account_id=m.account_id AND c.email=m.contact_email
+                WHERE m.account_id=?
+                GROUP BY m.contact_email
                 ORDER BY last_at DESC
                 """,
                 (account_id,),
@@ -310,17 +441,19 @@ class AppHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/messages":
             params = parse_qs(parsed.query)
             account_id = int((params.get("account_id") or ["0"])[0])
-            contact = (params.get("contact") or [""])[0]
-            messages = db_fetch_all(
+            contact = (params.get("contact") or [""])[0].lower().strip()
+            rows = db_fetch_all(
                 """
-                SELECT id, direction, body, body_html, sent_at
-                FROM messages
-                WHERE account_id = ? AND contact_email = ?
-                ORDER BY sent_at ASC, id ASC
+                SELECT m.id, m.direction, m.body, m.body_html, m.sent_at, COALESCE(c.display_name, m.contact_email) AS display_name
+                FROM messages m
+                LEFT JOIN contacts c ON c.account_id=m.account_id AND c.email=m.contact_email
+                WHERE m.account_id=? AND m.contact_email=?
+                ORDER BY m.sent_at ASC, m.id ASC
                 """,
                 (account_id, contact),
             )
-            return json_response(self, messages)
+            return json_response(self, rows)
+
         if not parsed.path.startswith("/api/"):
             return self.serve_file(STATIC_DIR / "index.html", "text/html; charset=utf-8")
         self.send_error(404, "Not Found")
@@ -335,14 +468,8 @@ class AppHandler(BaseHTTPRequestHandler):
                 if missing:
                     return json_response(self, {"error": f"Fehlende Felder: {', '.join(missing)}"}, 400)
                 account_id = db_execute(
-                    """
-                    INSERT INTO accounts(name, email, imap_host, imap_port, smtp_host, smtp_port, password, use_ssl, smtp_security, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        data["name"], data["email"], data["imap_host"], int(data["imap_port"]), data["smtp_host"], int(data["smtp_port"]),
-                        data["password"], 1 if data.get("use_ssl", True) else 0, data.get("smtp_security", "auto"), utc_now_iso(),
-                    ),
+                    "INSERT INTO accounts(name,email,imap_host,imap_port,smtp_host,smtp_port,password,use_ssl,smtp_security,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (data["name"], data["email"], data["imap_host"], int(data["imap_port"]), data["smtp_host"], int(data["smtp_port"]), data["password"], 1 if data.get("use_ssl", True) else 0, data.get("smtp_security", "auto"), utc_now_iso()),
                 )
                 return json_response(self, {"id": account_id}, 201)
             if parsed.path == "/api/sync":
@@ -351,6 +478,26 @@ class AppHandler(BaseHTTPRequestHandler):
                 data = parse_json_body(self)
                 send_message(int(data["account_id"]), data["to_email"], data["body"], bool(data.get("is_html")))
                 return json_response(self, {"ok": True}, 201)
+            if parsed.path == "/api/send_group":
+                data = parse_json_body(self)
+                send_group_message(int(data["account_id"]), int(data["group_id"]), data["body"], bool(data.get("is_html")))
+                return json_response(self, {"ok": True}, 201)
+            if parsed.path == "/api/contacts":
+                data = parse_json_body(self)
+                upsert_contact(int(data["account_id"]), data["email"].lower().strip(), data.get("display_name") or None)
+                return json_response(self, {"ok": True}, 201)
+            if parsed.path == "/api/groups":
+                data = parse_json_body(self)
+                group_id = db_execute("INSERT INTO chat_groups(account_id,name,created_at) VALUES(?,?,?)", (int(data["account_id"]), data["name"], utc_now_iso()))
+                for email in data.get("members", []):
+                    db_execute("INSERT OR IGNORE INTO group_members(group_id,email) VALUES(?,?)", (group_id, email.lower().strip()))
+                return json_response(self, {"id": group_id}, 201)
+            if parsed.path == "/api/settings":
+                data = parse_json_body(self)
+                for k, v in data.items():
+                    if k in DEFAULT_SETTINGS:
+                        db_execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (k, str(v)))
+                return json_response(self, {"ok": True}, 200)
         except Exception as e:
             return json_response(self, {"error": str(e)}, 500)
         self.send_error(404, "Not Found")

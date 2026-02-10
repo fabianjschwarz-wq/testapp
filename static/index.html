@@ -8,41 +8,49 @@
 </head>
 <body>
   <div class="shell" id="shell">
-    <aside class="sidebar" id="sidebar">
+    <aside class="sidebar">
       <div class="brand-row">
         <h1>MailChat</h1>
-        <button id="mobileSwitchBtn" class="ghost">📱 Mobile</button>
+        <button id="modeSwitchBtn" class="ghost">📱 Mobile</button>
       </div>
 
-      <div class="toolbar account-toolbar">
+      <div class="toolbar">
         <select id="accountSelect"></select>
         <button id="newAccountBtn">+ Konto</button>
       </div>
 
-      <div class="toolbar quick-contact-toolbar">
-        <input id="quickContactInput" type="email" placeholder="Kontakt schnell hinzufügen" />
-        <button id="quickAddContactBtn" class="ghost">Chat</button>
+      <div class="toolbar">
+        <input id="quickContactInput" type="email" placeholder="Neue Kontakt-E-Mail" />
+        <input id="quickContactNameInput" placeholder="Name" />
+        <button id="quickAddContactBtn" class="ghost">+</button>
+      </div>
+
+      <div class="toolbar">
+        <input id="groupNameInput" placeholder="Neue Gruppe" />
+        <button id="createGroupBtn" class="ghost">Gruppe</button>
       </div>
 
       <div class="toolbar sticky-toolbar">
         <button id="syncBtn" class="full">Synchronisieren</button>
       </div>
 
-      <ul id="chatList" class="chat-list"></ul>
+      <div class="chat-scroll">
+        <ul id="chatList" class="chat-list"></ul>
+        <h3>Gruppen</h3>
+        <ul id="groupList" class="chat-list"></ul>
+      </div>
     </aside>
 
     <main class="chat-main">
       <div class="chat-top">
         <button id="mobileBackBtn" class="ghost mobile-only" type="button">← Zurück</button>
-        <input id="contactInput" list="knownContacts" placeholder="Kontakt E-Mail" />
-        <datalist id="knownContacts"></datalist>
-        <button id="openChatBtn">Öffnen</button>
+        <div class="contact-info" id="contactInfo">Kein Chat ausgewählt</div>
       </div>
 
       <div id="messages" class="messages"></div>
 
       <form id="sendForm" class="composer">
-        <label class="html-switch"><input id="htmlMode" type="checkbox" /> HTML senden</label>
+        <label class="html-switch"><input id="htmlMode" type="checkbox" /> HTML</label>
         <textarea id="messageInput" placeholder="Nachricht schreiben..."></textarea>
         <button type="submit">Senden</button>
       </form>
@@ -74,6 +82,24 @@
       </div>
     </form>
   </dialog>
+
+  <dialog id="settingsDialog">
+    <form id="settingsForm" method="dialog">
+      <h2>Einstellungen</h2>
+      <label>Polling Intervall (ms)<input name="poll_interval_ms" type="number" min="500" step="100" /></label>
+      <label><input name="auto_sync_enabled" type="checkbox" /> Auto-Sync aktiv</label>
+      <label><input name="filter_noreply" type="checkbox" /> No-Reply filtern</label>
+      <label><input name="filter_info_addresses" type="checkbox" /> info@ filtern</label>
+      <label><input name="filter_promotions" type="checkbox" /> Werbe-/List-Mails filtern</label>
+      <label><input name="strip_replies" type="checkbox" /> Zitatverläufe aus Antworten entfernen</label>
+      <div class="dialog-actions">
+        <button type="button" id="closeSettingsBtn" class="ghost">Schließen</button>
+        <button type="submit">Speichern</button>
+      </div>
+    </form>
+  </dialog>
+
+  <button id="settingsBtn" class="settings-fab" title="Einstellungen">⚙️</button>
 
   <script src="/static/app.js"></script>
 </body>
