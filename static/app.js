@@ -29,10 +29,11 @@ const el = {
   settingsDialog: document.getElementById('settingsDialog'),
   sendButton: document.querySelector('#sendForm button[type="submit"]'),
   attachmentInput: document.getElementById('attachmentInput'),
+  attachmentBtn: document.getElementById('attachmentBtn'),
   emojiBtn: document.getElementById('emojiBtn'),
+  chatContextMenu: document.getElementById('chatContextMenu'),
+  ctxDeleteBtn: document.getElementById('ctxDeleteBtn'),
 };
-
-const EMOJIS = ['😀', '😂', '😍', '👍', '🙏', '🎉', '🔥', '❤️', '😎', '🤝', '✅', '🚀'];
 
 async function api(path, options = {}) {
   const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
@@ -118,6 +119,39 @@ function renderBubbles(rows) {
   el.messages.scrollTop = el.messages.scrollHeight;
 }
 
+function hideContextMenu() {
+  el.chatContextMenu.hidden = true;
+  el.chatContextMenu.dataset.kind = '';
+  el.chatContextMenu.dataset.id = '';
+}
+
+function openContextMenu(kind, id, x, y) {
+  el.chatContextMenu.dataset.kind = kind;
+  el.chatContextMenu.dataset.id = String(id || '');
+  el.chatContextMenu.style.left = `${x}px`;
+  el.chatContextMenu.style.top = `${y}px`;
+  el.chatContextMenu.hidden = false;
+}
+
+function addDeleteMenuHandlers(node, kind, id) {
+  let longPressTimer = null;
+  node.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    openContextMenu(kind, id, e.clientX, e.clientY);
+  });
+  node.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse') return;
+    longPressTimer = setTimeout(() => openContextMenu(kind, id, e.clientX, e.clientY), 550);
+  });
+  const cancel = () => {
+    if (longPressTimer) clearTimeout(longPressTimer);
+    longPressTimer = null;
+  };
+  node.addEventListener('pointerup', cancel);
+  node.addEventListener('pointercancel', cancel);
+  node.addEventListener('pointerleave', cancel);
+}
+
 async function loadSettings() {
   state.settings = await api('/api/settings');
   const f = document.getElementById('settingsForm');
@@ -169,6 +203,7 @@ async function loadChats() {
     li.classList.toggle('has-unread', Number(chat.unread_count || 0) > 0);
     li.innerHTML = `<div class="row"><strong>${chat.display_name}</strong>${badge}</div><div class="preview">${(chat.last_body || '').slice(0, 80)}</div>`;
     li.onclick = async () => { await openContactChat(chat.contact_email); };
+    addDeleteMenuHandlers(li, 'contact', chat.contact_email);
     el.chatList.append(li);
   });
 }
@@ -182,6 +217,7 @@ async function loadGroups() {
     li.className = state.activeGroup === g.id ? 'active' : '';
     li.innerHTML = `<strong>👥 ${g.name}</strong><div class="preview">${g.members} Mitglieder</div>`;
     li.onclick = async () => { await openGroupChat(g.id, g.name, g.members); };
+    addDeleteMenuHandlers(li, 'group', g.id);
     el.groupList.append(li);
   });
 }
@@ -282,6 +318,7 @@ async function sendCurrentMessage(e) {
     }
     el.messageInput.value = '';
     el.attachmentInput.value = '';
+    el.attachmentBtn.textContent = '📎';
     state.replyToMessageId = null;
   } finally {
     state.isSending = false;
@@ -402,11 +439,45 @@ function bindUi() {
     await refreshSidebars();
   };
   el.emojiBtn.onclick = () => {
-    const choice = prompt(`Emoji wählen:\n${EMOJIS.join(' ')}`, '😀');
-    if (!choice) return;
-    el.messageInput.value += `${choice} `;
     el.messageInput.focus();
+    const ua = navigator.userAgent || '';
+    const hint = /Mac/.test(ua) ? '⌃⌘ Leertaste' : (/Windows/.test(ua) ? 'Win + .' : 'System-Emoji-Shortcut');
+    alert(`Öffne das System-Emoji-Feld mit: ${hint}`);
   };
+  el.attachmentBtn.onclick = () => el.attachmentInput.click();
+  el.attachmentInput.onchange = () => {
+    const count = (el.attachmentInput.files || []).length;
+    el.attachmentBtn.textContent = count ? `📎 ${count}` : '📎';
+  };
+
+  el.ctxDeleteBtn.onclick = async () => {
+    const kind = el.chatContextMenu.dataset.kind;
+    const id = el.chatContextMenu.dataset.id;
+    hideContextMenu();
+    if (kind === 'contact' && id && state.accountId) {
+      await api(`/api/contacts?account_id=${state.accountId}&email=${encodeURIComponent(id)}`, { method: 'DELETE' });
+      if (state.activeContact === id) {
+        state.activeContact = null;
+        el.messages.innerHTML = '<p class="empty">Chat gelöscht.</p>';
+      }
+      await refreshSidebars();
+    }
+    if (kind === 'group' && id && state.accountId) {
+      await api(`/api/groups?account_id=${state.accountId}&id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+      if (String(state.activeGroup) === String(id)) {
+        state.activeGroup = null;
+        el.messages.innerHTML = '<p class="empty">Gruppe gelöscht.</p>';
+      }
+      await refreshSidebars();
+    }
+  };
+
+  window.addEventListener('pointerdown', (e) => {
+    if (!el.chatContextMenu.hidden && !el.chatContextMenu.contains(e.target)) hideContextMenu();
+  });
+  window.addEventListener('scroll', hideContextMenu, true);
+  window.addEventListener('resize', hideContextMenu);
+
   document.getElementById('sendForm').addEventListener('submit', sendCurrentMessage);
 
   document.getElementById('accountForm').addEventListener('submit', async (e) => {

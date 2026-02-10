@@ -40,9 +40,6 @@ button, input, select, textarea { font: inherit; }
 .contact-toolbar { grid-template-columns: minmax(0, 1fr) minmax(0, 0.8fr) auto; }
 .danger-toolbar { grid-template-columns: 1fr 1fr; }
 .sticky-toolbar {
-  position: sticky;
-  top: 0;
-  z-index: 2;
   background: var(--panel);
   grid-template-columns: 1fr;
 }
@@ -139,8 +136,26 @@ button.full { width: 100%; }
 .composer textarea { min-height: 56px; max-height: 180px; resize: vertical; }
 .composer button { min-width: 96px; }
 .composer #emojiBtn { min-width: 46px; }
-.composer #attachmentInput { max-width: 220px; font-size: 0.82rem; padding: 8px; }
+.composer #attachmentBtn { min-width: 46px; }
 .html-switch { color: var(--muted); display: flex; gap: 6px; align-items: center; }
+
+.context-menu {
+  position: fixed;
+  z-index: 20;
+  background: #1c2a31;
+  border: 1px solid #33434d;
+  border-radius: 10px;
+  padding: 6px;
+  box-shadow: 0 8px 20px rgb(0 0 0 / 0.35);
+}
+.context-menu button {
+  width: 100%;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  padding: 8px 10px;
+}
+.context-menu button:hover { background: #2a3942; }
 
 .mobile-only { display: none; }
 .settings-fab { position: fixed; right: 18px; bottom: 92px; z-index: 4; }

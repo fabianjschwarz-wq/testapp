@@ -265,13 +265,26 @@ def extract_attachments(msg) -> list[dict]:
 def maybe_process_read_receipt(account_id: int, msg) -> bool:
     ctype = (msg.get_content_type() or "").lower()
     subject = (msg.get("Subject") or "")
-    if "disposition-notification" not in ctype and "read:" not in subject.lower() and "gelesen" not in subject.lower():
+    subject_l = subject.lower()
+    body, _ = extract_bodies(msg, strip_replies=False)
+    body_l = (body or "").lower()
+    attachment_names = [((p.get_filename() or "").lower()) for p in (msg.walk() if msg.is_multipart() else [])]
+
+    is_mdn = (
+        "disposition-notification" in ctype
+        or "multipart/report" in ctype
+        or "empfangsbestätigung" in subject_l
+        or "lesebestätigung" in subject_l
+        or "read receipt" in subject_l
+        or "original-message-id" in body_l
+        or any("mdn" in name for name in attachment_names)
+    )
+    if not is_mdn:
         return False
 
     candidates = []
     if msg.get("Original-Message-ID"):
         candidates.append(msg.get("Original-Message-ID"))
-    body, _ = extract_bodies(msg, strip_replies=False)
     for line in (body or "").splitlines():
         if "original-message-id" in line.lower():
             _, _, v = line.partition(":")
@@ -287,7 +300,8 @@ def maybe_process_read_receipt(account_id: int, msg) -> bool:
             (utc_now_iso(), existing["id"]),
         )
         return True
-    return False
+    # Even when we cannot map the receipt to a message-id, keep it out of chat history.
+    return True
 
 
 def parse_from_header(from_header: str) -> tuple[str, str | None]:
