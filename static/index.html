@@ -8,27 +8,39 @@
 </head>
 <body>
   <div class="shell" id="shell">
-    <aside class="sidebar">
+    <aside class="sidebar" id="sidebar">
       <div class="brand-row">
         <h1>MailChat</h1>
         <button id="mobileSwitchBtn" class="ghost">📱 Mobile</button>
       </div>
-      <div class="toolbar">
+
+      <div class="toolbar account-toolbar">
         <select id="accountSelect"></select>
         <button id="newAccountBtn">+ Konto</button>
       </div>
-      <div class="toolbar">
+
+      <div class="toolbar quick-contact-toolbar">
+        <input id="quickContactInput" type="email" placeholder="Kontakt schnell hinzufügen" />
+        <button id="quickAddContactBtn" class="ghost">Chat</button>
+      </div>
+
+      <div class="toolbar sticky-toolbar">
         <button id="syncBtn" class="full">Synchronisieren</button>
       </div>
+
       <ul id="chatList" class="chat-list"></ul>
     </aside>
 
     <main class="chat-main">
       <div class="chat-top">
-        <input id="contactInput" placeholder="Kontakt E-Mail" />
+        <button id="mobileBackBtn" class="ghost mobile-only" type="button">← Zurück</button>
+        <input id="contactInput" list="knownContacts" placeholder="Kontakt E-Mail" />
+        <datalist id="knownContacts"></datalist>
         <button id="openChatBtn">Öffnen</button>
       </div>
+
       <div id="messages" class="messages"></div>
+
       <form id="sendForm" class="composer">
         <label class="html-switch"><input id="htmlMode" type="checkbox" /> HTML senden</label>
         <textarea id="messageInput" placeholder="Nachricht schreiben..."></textarea>

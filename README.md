@@ -7,7 +7,8 @@ MailChat zeigt E-Mail-Verkehr als Chat-Ansicht (ähnlich Messenger):
 - **Datums-/Uhrzeit-Anzeige pro Bubble**
 - **Filter für Werbe-/No-Reply-Mails**
 - **SMTP-Sicherheitsmodus (Auto / SSL / STARTTLS / Plain)**
-- **Mobile-Ansicht per Switch**
+- **Mobile-Ansicht per Switch inkl. Zurück-Button**
+- **Realtime-Aktualisierung inkl. Browser-Benachrichtigungen**
 
 ## Start
 
