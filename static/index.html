@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MailChat</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="header-row">
+        <h1>MailChat</h1>
+        <button id="newAccountBtn">Konto +</button>
+      </div>
+      <select id="accountSelect"></select>
+      <div class="actions">
+        <button id="syncBtn">Synchronisieren</button>
+      </div>
+      <ul id="chatList" class="chat-list"></ul>
+    </aside>
+
+    <main class="chat-panel">
+      <div class="chat-header">
+        <input id="contactInput" placeholder="Kontakt-E-Mail (z.B. max@example.com)" />
+        <button id="openChatBtn">Chat öffnen</button>
+      </div>
+      <div id="messages" class="messages"></div>
+      <form id="sendForm" class="composer">
+        <textarea id="messageInput" placeholder="Nachricht schreiben..."></textarea>
+        <button type="submit">Senden</button>
+      </form>
+    </main>
+  </div>
+
+  <dialog id="accountDialog">
+    <form id="accountForm" method="dialog">
+      <h2>E-Mail-Konto hinzufügen</h2>
+      <label>Name<input name="name" required /></label>
+      <label>E-Mail<input name="email" type="email" required /></label>
+      <label>IMAP Host<input name="imap_host" required /></label>
+      <label>IMAP Port<input name="imap_port" value="993" required /></label>
+      <label>SMTP Host<input name="smtp_host" required /></label>
+      <label>SMTP Port<input name="smtp_port" value="465" required /></label>
+      <label>Passwort / App-Passwort<input name="password" type="password" required /></label>
+      <label><input name="use_ssl" type="checkbox" checked /> SSL verwenden</label>
+      <div class="dialog-actions">
+        <button type="button" id="closeDialogBtn">Abbrechen</button>
+        <button type="submit">Speichern</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

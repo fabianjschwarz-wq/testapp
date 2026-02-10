@@ -1,0 +1,120 @@
+:root {
+  font-family: Arial, sans-serif;
+  color: #202124;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; background: #ece5dd; }
+
+.app {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  height: 100vh;
+}
+
+.sidebar {
+  background: #f7f7f7;
+  border-right: 1px solid #dadce0;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+h1 { margin: 0; font-size: 1.3rem; }
+button { cursor: pointer; }
+
+.chat-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.chat-list li {
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 10px;
+  padding: 10px;
+}
+
+.chat-list li.active {
+  border-color: #25d366;
+  background: #e8fceb;
+}
+
+.preview {
+  color: #5f6368;
+  font-size: 0.85rem;
+  margin-top: 4px;
+}
+
+.chat-panel {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  height: 100vh;
+}
+
+.chat-header {
+  padding: 10px;
+  background: #f0f2f5;
+  border-bottom: 1px solid #dfe1e5;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+.messages {
+  padding: 14px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.bubble {
+  max-width: 70%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  white-space: pre-wrap;
+  line-height: 1.4;
+}
+
+.bubble.inbound {
+  align-self: flex-start;
+  background: #fff;
+}
+
+.bubble.outbound {
+  align-self: flex-end;
+  background: #dcf8c6;
+}
+
+.composer {
+  border-top: 1px solid #dfe1e5;
+  padding: 10px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  background: #f0f2f5;
+}
+
+textarea { resize: vertical; min-height: 60px; }
+
+#accountDialog form {
+  min-width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+label { display: flex; flex-direction: column; gap: 4px; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
