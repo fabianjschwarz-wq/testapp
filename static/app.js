@@ -17,6 +17,9 @@ const state = {
   addressBook: new Map(),
   syncTick: 0,
   eventSource: null,
+  replyTargetId: null,
+  replyPreview: "",
+  replyHighlightTimeout: null,
 };
 
 const el = {
@@ -80,14 +83,23 @@ function pushError(err) {
   el.errorLogOutput.textContent = state.errors.join('\n') || 'Keine Fehler';
 }
 
+function clearReplyHighlight() {
+  if (state.replyHighlightTimeout) {
+    clearTimeout(state.replyHighlightTimeout);
+    state.replyHighlightTimeout = null;
+  }
+  document.querySelectorAll('.bubble.reply-target-highlight').forEach((n) => n.classList.remove('reply-target-highlight'));
+}
+
 function updateReplyBanner() {
-  if (!state.replyToMessageId) {
-    el.replyBanner.hidden = true;
+  const active = Boolean(state.replyToMessageId);
+  el.replyBanner.hidden = !active;
+  el.clearReplyBtn.hidden = !active;
+  if (!active) {
     el.replyBannerText.textContent = '';
     return;
   }
-  el.replyBanner.hidden = false;
-  el.replyBannerText.textContent = `Antwort auf Nachricht ${state.replyToMessageId.slice(0, 22)}…`;
+  el.replyBannerText.textContent = state.replyPreview || 'Antwort auf ausgewählte Nachricht';
 }
 
 function autoGrowMessageInput() {
@@ -191,6 +203,9 @@ function appendBubble(msg) {
   replyBtn.textContent = '↩ Antworten';
   replyBtn.onclick = () => {
     state.replyToMessageId = msg.external_message_id || null;
+    state.replyTargetId = msg.id || null;
+    const plainPreview = String((msg.body || msg.body_html || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim());
+    state.replyPreview = plainPreview ? plainPreview.slice(0, 90) : 'Antwort auf ausgewählte Nachricht';
     updateReplyBanner();
     el.messageInput.focus();
   };
@@ -217,6 +232,20 @@ function renderBubbles(rows) {
   el.messages.innerHTML = '';
   rows.forEach(appendBubble);
   el.messages.scrollTop = el.messages.scrollHeight;
+}
+
+
+function focusReplyTargetBubble() {
+  if (!state.replyTargetId) return;
+  const node = el.messages.querySelector(`.bubble[data-message-id="${state.replyTargetId}"]`);
+  if (!node) return;
+  node.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  clearReplyHighlight();
+  node.classList.add('reply-target-highlight');
+  state.replyHighlightTimeout = setTimeout(() => {
+    node.classList.remove('reply-target-highlight');
+    state.replyHighlightTimeout = null;
+  }, 3000);
 }
 
 function hideContextMenu() {
@@ -440,6 +469,11 @@ async function openContactChat(email) {
   const token = ++state.openChatToken;
   state.activeGroup = null;
   state.activeContact = email;
+  state.replyToMessageId = null;
+  state.replyTargetId = null;
+  state.replyPreview = '';
+  clearReplyHighlight();
+  updateReplyBanner();
   el.contactInfo.textContent = `${displayName(email)} • ${email}`;
   updateAddToBookVisibility();
   if (state.mobileMode) el.shell.classList.add('chat-open');
@@ -457,6 +491,11 @@ async function openGroupChat(groupId, name, members) {
   const token = ++state.openChatToken;
   state.activeContact = null;
   state.activeGroup = groupId;
+  state.replyToMessageId = null;
+  state.replyTargetId = null;
+  state.replyPreview = '';
+  clearReplyHighlight();
+  updateReplyBanner();
   el.contactInfo.textContent = `👥 ${name} • ${members} Mitglieder`;
   updateAddToBookVisibility();
   if (state.mobileMode) el.shell.classList.add('chat-open');
@@ -536,6 +575,9 @@ async function sendCurrentMessage(e) {
     el.attachmentInput.value = '';
     el.attachmentBtn.textContent = '📎';
     state.replyToMessageId = null;
+    state.replyTargetId = null;
+    state.replyPreview = '';
+    clearReplyHighlight();
     updateReplyBanner();
   } finally {
     state.isSending = false;
@@ -653,6 +695,11 @@ function bindUi() {
     state.activeGroup = null;
     el.contactInfo.textContent = 'Kein Chat ausgewählt';
     el.messages.innerHTML = '<p class="empty">Wähle links einen Kontakt oder eine Gruppe.</p>';
+    state.replyToMessageId = null;
+    state.replyTargetId = null;
+    state.replyPreview = '';
+    clearReplyHighlight();
+    updateReplyBanner();
     updateAddToBookVisibility();
     loadChats();
     loadGroups();
@@ -660,7 +707,14 @@ function bindUi() {
 
   el.clearReplyBtn.onclick = () => {
     state.replyToMessageId = null;
+    state.replyTargetId = null;
+    state.replyPreview = '';
+    clearReplyHighlight();
     updateReplyBanner();
+  };
+
+  el.replyBanner.onclick = () => {
+    focusReplyTargetBubble();
   };
 
   el.addToBookBtn.onclick = async () => {
@@ -685,6 +739,11 @@ function bindUi() {
     state.activeContact = null;
     state.activeGroup = null;
     state.chatLastId.clear();
+  state.replyToMessageId = null;
+  state.replyTargetId = null;
+  state.replyPreview = '';
+  clearReplyHighlight();
+  updateReplyBanner();
     await refreshSidebars();
     restartEventStream();
     el.messages.innerHTML = '<p class="empty">Wähle links einen Kontakt oder eine Gruppe.</p>';

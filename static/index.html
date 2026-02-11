@@ -43,14 +43,13 @@
       <div class="chat-top">
         <button id="mobileBackBtn" class="ghost mobile-only" type="button">← Zurück</button>
         <div class="contact-info" id="contactInfo">Kein Chat ausgewählt</div>
+        <button id="replyBanner" class="reply-pill ghost" type="button" hidden>
+          <span id="replyBannerText"></span>
+        </button>
+        <button id="clearReplyBtn" type="button" class="ghost reply-clear" hidden>✕</button>
         <button id="addToBookBtn" class="ghost icon-btn" type="button" title="Zum Kontaktbuch hinzufügen" hidden>＋</button>
         <button id="settingsTopBtn" class="ghost icon-btn" type="button" title="Einstellungen">⚙️</button>
         <button id="errorBtn" class="ghost icon-btn error-btn" type="button" title="Fehler anzeigen">⚠️</button>
-      </div>
-
-      <div id="replyBanner" class="reply-banner" hidden>
-        <span id="replyBannerText">Antwort auf Nachricht</span>
-        <button id="clearReplyBtn" type="button" class="ghost">✕</button>
       </div>
 
       <div id="messages" class="messages"></div>

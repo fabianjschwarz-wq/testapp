@@ -15,6 +15,7 @@ import smtplib
 import base64
 import socket
 import time
+from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -678,6 +679,19 @@ def send_message(account_id: int, to_email: str, body: str, is_html: bool = Fals
     to_email = to_email.lower().strip()
     now = utc_now_iso()
 
+    quoted_row = None
+    if reply_to_message_id:
+        quoted_row = db_fetch_one(
+            """
+            SELECT direction, sent_at, contact_email, body, body_html
+            FROM messages
+            WHERE account_id=? AND external_message_id=?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (account_id, reply_to_message_id),
+        )
+
     msg = EmailMessage()
     msg["From"] = account["email"]
     msg["To"] = to_email
@@ -687,13 +701,24 @@ def send_message(account_id: int, to_email: str, body: str, is_html: bool = Fals
     if reply_to_message_id:
         msg["In-Reply-To"] = reply_to_message_id
         msg["References"] = reply_to_message_id
-    if is_html:
-        text_fallback = re.sub(r"<[^>]+>", " ", body)
-        text_fallback = re.sub(r"\s+", " ", text_fallback).strip()
-        msg.set_content(text_fallback or "HTML Nachricht")
-        msg.add_alternative(body, subtype="html")
-    else:
-        msg.set_content(body)
+
+    base_text = re.sub(r"<[^>]+>", " ", body).strip() if is_html else (body or "")
+    text_body = base_text
+    html_body = body if is_html else None
+    if quoted_row:
+        author = account["email"] if quoted_row["direction"] == "outbound" else quoted_row["contact_email"]
+        q_time = quoted_row["sent_at"] or now
+        quoted_text = (quoted_row.get("body") or "").strip()
+        quoted_html = (quoted_row.get("body_html") or "").strip()
+        quote_head = f"Am {q_time} schrieb {author}:"
+        quote_lines = "\n> ".join((quoted_text or "").splitlines())
+        text_body = f"{base_text}\n\n{quote_head}\n> {quote_lines}".strip()
+        safe_html_quote = quoted_html or ("<pre>" + escape(quoted_text) + "</pre>")
+        html_body = (body if is_html else f"<p>{escape(base_text)}</p>") + f"<blockquote><p>{escape(quote_head)}</p>{safe_html_quote}</blockquote>"
+
+    msg.set_content(text_body.strip() or "Nachricht")
+    if html_body:
+        msg.add_alternative(html_body, subtype="html")
 
     safe_attachments = []
     for a in (attachments or []):

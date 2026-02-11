@@ -85,7 +85,7 @@ button.full { width: 100%; }
 .chat-main { min-height: 0; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; background: #0f1a20; }
 .chat-top {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+  grid-template-columns: auto minmax(0, 1fr) minmax(0, 320px) auto auto auto auto;
   gap: 8px;
   padding: 12px;
   background: var(--panel-2);
@@ -95,18 +95,30 @@ button.full { width: 100%; }
 .icon-btn { min-width: 32px; width: 32px; height: 32px; padding: 4px; display: inline-flex; align-items: center; justify-content: center; }
 .error-btn { min-width: 32px; font-size: 0.82rem; }
 
-.reply-banner {
-  display: grid;
-  grid-template-columns: minmax(0,1fr) auto;
-  gap: 8px;
-  align-items: center;
-  background: #1e2d36;
-  border-bottom: 1px solid #30424d;
-  padding: 6px 12px;
-  color: #9fb5bf;
-  font-size: 0.86rem;
+.reply-pill {
+  min-width: 0;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  color: #b7cad3;
+  font-size: 0.82rem;
+  padding: 6px 10px;
 }
-.reply-banner .ghost { padding: 4px 8px; font-size: 0.75rem; }
+.reply-pill:hover { background: #34454f; }
+.reply-clear {
+  min-width: 30px;
+  width: 30px;
+  height: 30px;
+  padding: 3px;
+  font-size: 0.78rem;
+}
+
+.bubble.reply-target-highlight {
+  outline: 2px solid #66e0bf;
+  box-shadow: 0 0 0 2px rgb(102 224 191 / 25%);
+}
 
 .splitter {
   background: #22313a;
