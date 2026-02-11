@@ -16,6 +16,7 @@ const state = {
   accounts: [],
   addressBook: new Map(),
   syncTick: 0,
+  eventSource: null,
 };
 
 const el = {
@@ -89,6 +90,11 @@ function updateReplyBanner() {
   el.replyBannerText.textContent = `Antwort auf Nachricht ${state.replyToMessageId.slice(0, 22)}…`;
 }
 
+function autoGrowMessageInput() {
+  el.messageInput.style.height = 'auto';
+  el.messageInput.style.height = `${Math.min(160, Math.max(38, el.messageInput.scrollHeight))}px`;
+}
+
 async function api(path, options = {}) {
   try {
     const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
@@ -137,7 +143,17 @@ function appendBubble(msg) {
   if (Array.isArray(msg.attachments) && msg.attachments.length) {
     const att = document.createElement('div');
     att.className = 'attachments';
-    att.innerHTML = msg.attachments.map((a) => `📎 ${a.name} (${Math.max(1, Math.round((a.size || 0) / 1024))} KB)`).join('<br>');
+    msg.attachments.forEach((a) => {
+      const line = document.createElement('div');
+      const link = document.createElement('a');
+      link.textContent = `📎 ${a.name} (${Math.max(1, Math.round((a.size || 0) / 1024))} KB)`;
+      link.href = a.preview_url || '#';
+      link.target = '_blank';
+      link.rel = 'noopener';
+      link.download = a.name || 'download';
+      line.append(link);
+      att.append(line);
+    });
     content.append(att);
     msg.attachments.forEach((a) => {
       const ct = String(a.content_type || '').toLowerCase();
@@ -304,6 +320,7 @@ async function loadSettings() {
   f.mark_read_on_open.checked = asBool(state.settings.mark_read_on_open);
   f.os_contact_sync_enabled.checked = asBool(state.settings.os_contact_sync_enabled);
   f.send_custom_read_receipts.checked = asBool(state.settings.send_custom_read_receipts);
+  f.enter_sends_message.checked = asBool(state.settings.enter_sends_message);
   restartPolling();
 }
 
@@ -328,6 +345,7 @@ async function loadAccounts() {
   el.accountSelect.value = String(state.accountId);
   setSyncState('idle');
   await refreshSidebars();
+  restartEventStream();
 }
 
 async function loadContacts() {
@@ -357,6 +375,19 @@ async function loadChats() {
     li.dataset.displayName = chat.display_name || '';
     li.dataset.avatarUrl = chat.avatar_url || '';
     li.onclick = async () => { await openContactChat(chat.contact_email); };
+    const row = li.querySelector('.row');
+    const editBtn = document.createElement('button');
+    editBtn.type = 'button';
+    editBtn.className = 'ghost mini-edit';
+    editBtn.textContent = '✎';
+    editBtn.title = 'Profil bearbeiten';
+    editBtn.onclick = async (ev) => {
+      ev.stopPropagation();
+      const rows = await api(`/api/contacts?account_id=${state.accountId}`);
+      const c = rows.find((r) => r.email === chat.contact_email) || { email: chat.contact_email, display_name: chat.display_name };
+      openProfileEditor('contact', c);
+    };
+    row.append(editBtn);
     addDeleteMenuHandlers(li, 'contact', chat.contact_email);
     el.chatList.append(li);
   });
@@ -369,10 +400,21 @@ async function loadGroups() {
   groups.forEach((g) => {
     const li = document.createElement('li');
     li.className = state.activeGroup === g.id ? 'active' : '';
-    li.innerHTML = `<strong>👥 ${g.name}</strong><div class="preview">${g.members} Mitglieder</div>`;
+    li.innerHTML = `<div class="row"><strong>👥 ${g.name}</strong></div><div class="preview">${g.members} Mitglieder</div>`;
     li.dataset.name = g.name || '';
     li.dataset.avatarUrl = g.avatar_url || '';
     li.onclick = async () => { await openGroupChat(g.id, g.name, g.members); };
+    const row = li.querySelector('.row');
+    const editBtn = document.createElement('button');
+    editBtn.type = 'button';
+    editBtn.className = 'ghost mini-edit';
+    editBtn.textContent = '✎';
+    editBtn.title = 'Gruppe bearbeiten';
+    editBtn.onclick = async (ev) => {
+      ev.stopPropagation();
+      openProfileEditor('group', { group_id: g.id, name: g.name, avatar_url: g.avatar_url || '' });
+    };
+    row.append(editBtn);
     addDeleteMenuHandlers(li, 'group', g.id);
     el.groupList.append(li);
   });
@@ -490,6 +532,7 @@ async function sendCurrentMessage(e) {
       return alert('Bitte zuerst einen Kontakt oder eine Gruppe auswählen.');
     }
     el.messageInput.value = '';
+    autoGrowMessageInput();
     el.attachmentInput.value = '';
     el.attachmentBtn.textContent = '📎';
     state.replyToMessageId = null;
@@ -554,6 +597,25 @@ function restartPolling() {
   const ms = Math.max(300, Number(state.settings?.poll_interval_ms || 1000));
   state.pollingHandle = setInterval(() => pollRealtime().catch(() => {}), ms);
   pollRealtime().catch(() => {});
+  restartEventStream();
+}
+
+function restartEventStream() {
+  if (state.eventSource) state.eventSource.close();
+  if (!state.accountId) return;
+  try {
+    const es = new EventSource('/api/events');
+    es.addEventListener('tick', () => {
+      pollRealtime().catch(() => {});
+    });
+    es.onerror = () => {
+      try { es.close(); } catch {}
+      setTimeout(restartEventStream, 1200);
+    };
+    state.eventSource = es;
+  } catch {
+    // browser unsupported; fallback polling remains
+  }
 }
 
 async function ensureNotificationPermission() {
@@ -624,6 +686,7 @@ function bindUi() {
     state.activeGroup = null;
     state.chatLastId.clear();
     await refreshSidebars();
+    restartEventStream();
     el.messages.innerHTML = '<p class="empty">Wähle links einen Kontakt oder eine Gruppe.</p>';
   };
 
@@ -650,13 +713,23 @@ function bindUi() {
   const emailLabel = document.getElementById('newEntityEmailLabel');
   const membersLabel = document.getElementById('newEntityMembersLabel');
   const membersList = document.getElementById('newEntityMembersList');
+  const memberSearch = document.getElementById('newEntityMemberSearch');
+  const addMemberEmailBtn = document.getElementById('addMemberEmailBtn');
+  const upsertAddressBookEntry = (email, displayName = '') => {
+    const normalized = String(email || '').trim().toLowerCase();
+    if (!normalized || state.addressBook.has(normalized)) return;
+    state.addressBook.set(normalized, { email: normalized, display_name: displayName || normalized });
+  };
   const rebuildMembersList = () => {
     membersList.innerHTML = '';
-    [...state.addressBook.values()].forEach((c) => {
-      const row = document.createElement('label');
-      row.innerHTML = `<input type="checkbox" value="${c.email}" /><span>${c.display_name || c.email}</span>`;
-      membersList.append(row);
-    });
+    const filter = String(memberSearch?.value || '').trim().toLowerCase();
+    [...state.addressBook.values()]
+      .filter((c) => !filter || String(c.email).toLowerCase().includes(filter) || String(c.display_name || '').toLowerCase().includes(filter))
+      .forEach((c) => {
+        const row = document.createElement('label');
+        row.innerHTML = `<input type="checkbox" value="${c.email}" /><span>${c.display_name || c.email}</span>`;
+        membersList.append(row);
+      });
   };
   const syncTypeUi = () => {
     const isGroup = newTypeSel.value === 'group';
@@ -666,6 +739,18 @@ function bindUi() {
   };
   syncTypeUi();
   newTypeSel.onchange = syncTypeUi;
+  memberSearch.oninput = () => rebuildMembersList();
+  addMemberEmailBtn.onclick = async () => {
+    if (newTypeSel.value !== 'group') return;
+    const raw = String(memberSearch.value || '').trim().toLowerCase();
+    if (!raw || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw)) return;
+    upsertAddressBookEntry(raw);
+    await api('/api/address_book', { method: 'POST', body: JSON.stringify({ account_id: state.accountId, email: raw, display_name: raw, source: 'manual' }) });
+    rebuildMembersList();
+    const cb = membersList.querySelector(`input[value="${CSS.escape(raw)}"]`);
+    if (cb) cb.checked = true;
+    memberSearch.value = '';
+  };
   document.getElementById('newEntityForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const f = new FormData(e.target);
@@ -708,8 +793,11 @@ function bindUi() {
     el.messageInput.focus();
     if (customElements.get('emoji-picker')) {
       const r = el.emojiBtn.getBoundingClientRect();
-      el.emojiPickerWrap.style.left = `${Math.max(8, r.left - 20)}px`;
-      el.emojiPickerWrap.style.top = `${Math.max(8, r.top - 360)}px`;
+      const pickerWidth = 352;
+      const left = Math.max(8, Math.min(window.innerWidth - pickerWidth - 8, r.left + (r.width / 2) - (pickerWidth / 2)));
+      const top = Math.max(8, r.top - 420);
+      el.emojiPickerWrap.style.left = `${left}px`;
+      el.emojiPickerWrap.style.top = `${top}px`;
       el.emojiPickerWrap.hidden = !el.emojiPickerWrap.hidden;
       return;
     }
@@ -846,6 +934,14 @@ function bindUi() {
   window.addEventListener('pointerup', () => { dragging = false; });
 
   document.getElementById('sendForm').addEventListener('submit', sendCurrentMessage);
+  el.messageInput.addEventListener('input', autoGrowMessageInput);
+  el.messageInput.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'Enter' || ev.shiftKey) return;
+    if (!asBool(state.settings?.enter_sends_message)) return;
+    ev.preventDefault();
+    sendCurrentMessage(ev).catch((err) => pushError(err));
+  });
+  autoGrowMessageInput();
 
   document.getElementById('accountForm').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -881,6 +977,7 @@ function bindUi() {
         mark_read_on_open: f.get('mark_read_on_open') === 'on' ? '1' : '0',
         os_contact_sync_enabled: f.get('os_contact_sync_enabled') === 'on' ? '1' : '0',
         send_custom_read_receipts: f.get('send_custom_read_receipts') === 'on' ? '1' : '0',
+        enter_sends_message: f.get('enter_sends_message') === 'on' ? '1' : '0',
       }),
     });
     el.settingsDialog.close();

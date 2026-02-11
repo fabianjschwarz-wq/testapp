@@ -14,6 +14,7 @@ import imaplib
 import smtplib
 import base64
 import socket
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -36,6 +37,7 @@ DEFAULT_SETTINGS = {
     "mark_read_on_open": "1",
     "os_contact_sync_enabled": "0",
     "send_custom_read_receipts": "1",
+    "enter_sends_message": "0",
 }
 
 
@@ -526,7 +528,8 @@ def send_custom_read_receipt(account_id: int, msg_row: dict):
     receipt = EmailMessage()
     receipt["From"] = account["email"]
     receipt["To"] = to_email
-    receipt["Subject"] = f"Empfangsbestätigung: {msg_row.get('subject') or 'Nachricht'}"
+    safe_subject = re.sub(r"[\r\n]+", " ", str(msg_row.get("subject") or "Nachricht")).strip()
+    receipt["Subject"] = f"Empfangsbestätigung: {safe_subject}"
     if msg_row.get("external_message_id"):
         receipt["In-Reply-To"] = msg_row["external_message_id"]
         receipt["References"] = msg_row["external_message_id"]
@@ -791,6 +794,20 @@ class AppHandler(BaseHTTPRequestHandler):
                 (account_id,),
             )
             return json_response(self, rows)
+        if parsed.path == "/api/events":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+            for i in range(120):
+                try:
+                    self.wfile.write(f"event: tick\ndata: {i}\n\n".encode("utf-8"))
+                    self.wfile.flush()
+                except Exception:
+                    break
+                time.sleep(1)
+            return
         if parsed.path == "/api/group_messages":
             params = parse_qs(parsed.query)
             account_id = int((params.get("account_id") or ["0"])[0])

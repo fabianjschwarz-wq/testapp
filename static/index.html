@@ -43,7 +43,7 @@
       <div class="chat-top">
         <button id="mobileBackBtn" class="ghost mobile-only" type="button">← Zurück</button>
         <div class="contact-info" id="contactInfo">Kein Chat ausgewählt</div>
-        <button id="addToBookBtn" class="ghost" type="button" title="Zum Kontaktbuch hinzufügen" hidden>＋ Kontakt</button>
+        <button id="addToBookBtn" class="ghost icon-btn" type="button" title="Zum Kontaktbuch hinzufügen" hidden>＋</button>
         <button id="settingsTopBtn" class="ghost icon-btn" type="button" title="Einstellungen">⚙️</button>
         <button id="errorBtn" class="ghost icon-btn error-btn" type="button" title="Fehler anzeigen">⚠️</button>
       </div>
@@ -60,7 +60,7 @@
         <input id="attachmentInput" type="file" multiple hidden />
         <button id="attachmentBtn" type="button" class="ghost" title="Anhang hochladen">📎</button>
         <button id="emojiBtn" type="button" class="ghost" title="System-Emoji">😀</button>
-        <textarea id="messageInput" placeholder="Nachricht schreiben..."></textarea>
+        <textarea id="messageInput" rows="1" placeholder="Nachricht schreiben..."></textarea>
         <button type="submit">Senden</button>
       </form>
     </main>
@@ -96,15 +96,28 @@
   <dialog id="settingsDialog">
     <form id="settingsForm" method="dialog">
       <h2>Einstellungen</h2>
-      <label>Polling Intervall (ms)<input name="poll_interval_ms" type="number" min="500" step="100" /></label>
-      <label><input name="auto_sync_enabled" type="checkbox" /> Auto-Sync aktiv</label>
-      <label><input name="filter_noreply" type="checkbox" /> No-Reply filtern</label>
-      <label><input name="filter_info_addresses" type="checkbox" /> info@ filtern</label>
-      <label><input name="filter_promotions" type="checkbox" /> Werbe-/List-Mails filtern</label>
-      <label><input name="strip_replies" type="checkbox" /> Zitatverläufe aus Antworten entfernen</label>
-      <label><input name="mark_read_on_open" type="checkbox" /> Nachrichten beim Chat-Öffnen als gelesen markieren</label>
-      <label><input name="os_contact_sync_enabled" type="checkbox" /> OS-Kontakte synchronisieren (wenn verfügbar)</label>
-      <label><input name="send_custom_read_receipts" type="checkbox" /> Eigene Lesebestätigungen senden (falls nötig)</label>
+      <fieldset>
+        <legend>Empfang & Echtzeit</legend>
+        <label>Polling Intervall (ms)<input name="poll_interval_ms" type="number" min="300" step="100" /></label>
+        <label><input name="auto_sync_enabled" type="checkbox" /> Auto-Sync aktiv</label>
+      </fieldset>
+      <fieldset>
+        <legend>Nachrichten</legend>
+        <label><input name="enter_sends_message" type="checkbox" /> Enter sendet Nachricht</label>
+        <label><input name="mark_read_on_open" type="checkbox" /> Nachrichten beim Chat-Öffnen als gelesen markieren</label>
+        <label><input name="strip_replies" type="checkbox" /> Zitatverläufe aus Antworten entfernen</label>
+      </fieldset>
+      <fieldset>
+        <legend>Filter & Bestätigungen</legend>
+        <label><input name="filter_noreply" type="checkbox" /> No-Reply filtern</label>
+        <label><input name="filter_info_addresses" type="checkbox" /> info@ filtern</label>
+        <label><input name="filter_promotions" type="checkbox" /> Werbe-/List-Mails filtern</label>
+        <label><input name="send_custom_read_receipts" type="checkbox" /> Eigene Lesebestätigungen senden (falls nötig)</label>
+      </fieldset>
+      <fieldset>
+        <legend>Kontakte</legend>
+        <label><input name="os_contact_sync_enabled" type="checkbox" /> OS-Kontakte synchronisieren (wenn verfügbar)</label>
+      </fieldset>
       <div class="dialog-actions">
         <button type="button" id="closeSettingsBtn" class="ghost">Schließen</button>
         <button type="submit">Speichern</button>
@@ -163,6 +176,8 @@
       <label>Name<input name="name" required /></label>
       <label id="newEntityEmailLabel">E-Mail (Kontakt)<input name="email" type="email" /></label>
       <label id="newEntityMembersLabel" hidden>Mitglieder aus Kontaktbuch
+        <input id="newEntityMemberSearch" placeholder="Kontakt suchen oder neue E-Mail eingeben" />
+        <button id="addMemberEmailBtn" type="button" class="ghost">Zur Liste hinzufügen</button>
         <div id="newEntityMembersList" class="members-list"></div>
       </label>
       <div class="dialog-actions">

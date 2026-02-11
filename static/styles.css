@@ -85,7 +85,7 @@ button.full { width: 100%; }
 .chat-main { min-height: 0; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; background: #0f1a20; }
 .chat-top {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
   gap: 8px;
   padding: 12px;
   background: var(--panel-2);
@@ -161,10 +161,9 @@ button.full { width: 100%; }
   background: var(--panel-2);
   align-items: center;
 }
-.composer textarea { min-height: 56px; max-height: 180px; resize: vertical; }
+.composer textarea { min-height: 38px; max-height: 180px; resize: none; line-height: 1.35; padding-top: 9px; padding-bottom: 9px; }
 .composer button { min-width: 96px; }
-.composer #emojiBtn { min-width: 46px; }
-.composer #attachmentBtn { min-width: 46px; }
+.composer #attachmentBtn, .composer #emojiBtn { min-width: 40px; width: 40px; height: 38px; padding: 6px; }
 .html-switch { color: var(--muted); display: flex; gap: 6px; align-items: center; }
 
 .context-menu {
@@ -217,7 +216,29 @@ button.full { width: 100%; }
   display: grid;
   gap: 6px;
 }
-.members-list label { color: var(--text) !important; grid-template-columns: auto 1fr; align-items: center; }
+.members-list label { color: var(--text) !important; display: grid; grid-template-columns: auto 1fr; align-items: center; }
+.mini-edit {
+  min-width: 24px;
+  width: 24px;
+  height: 24px;
+  padding: 2px;
+  font-size: 0.74rem;
+  opacity: 0.8;
+}
+
+#settingsDialog fieldset {
+  border: 1px solid #cfd7dc;
+  border-radius: 8px;
+  padding: 8px;
+  margin: 0;
+}
+#settingsDialog legend {
+  padding: 0 4px;
+  color: #24323a;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
 
 .mobile-only { display: none; }
 .settings-fab { position: fixed; right: 18px; bottom: 92px; z-index: 4; }
