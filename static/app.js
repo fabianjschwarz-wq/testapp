@@ -14,6 +14,8 @@ const state = {
   errors: [],
   activeAvatar: '',
   accounts: [],
+  addressBook: new Map(),
+  syncTick: 0,
 };
 
 const el = {
@@ -26,6 +28,11 @@ const el = {
   messages: document.getElementById('messages'),
   messageInput: document.getElementById('messageInput'),
   contactInfo: document.getElementById('contactInfo'),
+  addToBookBtn: document.getElementById('addToBookBtn'),
+  settingsTopBtn: document.getElementById('settingsTopBtn'),
+  replyBanner: document.getElementById('replyBanner'),
+  replyBannerText: document.getElementById('replyBannerText'),
+  clearReplyBtn: document.getElementById('clearReplyBtn'),
   modeSwitchBtn: document.getElementById('modeSwitchBtn'),
   newEntityBtn: document.getElementById('newEntityBtn'),
   mobileBackBtn: document.getElementById('mobileBackBtn'),
@@ -68,8 +75,18 @@ function pushError(err) {
   const msg = `[${new Date().toLocaleTimeString('de-DE')}] ${err?.message || String(err)}`;
   state.errors.unshift(msg);
   state.errors = state.errors.slice(0, 200);
-  document.getElementById('errorBtn').textContent = `⚠️ ${state.errors.length}`;
+  document.getElementById('errorBtn').title = `Fehler (${state.errors.length})`;
   el.errorLogOutput.textContent = state.errors.join('\n') || 'Keine Fehler';
+}
+
+function updateReplyBanner() {
+  if (!state.replyToMessageId) {
+    el.replyBanner.hidden = true;
+    el.replyBannerText.textContent = '';
+    return;
+  }
+  el.replyBanner.hidden = false;
+  el.replyBannerText.textContent = `Antwort auf Nachricht ${state.replyToMessageId.slice(0, 22)}…`;
 }
 
 async function api(path, options = {}) {
@@ -122,6 +139,27 @@ function appendBubble(msg) {
     att.className = 'attachments';
     att.innerHTML = msg.attachments.map((a) => `📎 ${a.name} (${Math.max(1, Math.round((a.size || 0) / 1024))} KB)`).join('<br>');
     content.append(att);
+    msg.attachments.forEach((a) => {
+      const ct = String(a.content_type || '').toLowerCase();
+      const data = a.data || a.preview_url || '';
+      if (!data) return;
+      if (ct.startsWith('image/')) {
+        const wrap = document.createElement('div');
+        wrap.className = 'media-preview';
+        const img = document.createElement('img');
+        img.src = data;
+        img.alt = a.name || 'Bild';
+        wrap.append(img);
+        content.append(wrap);
+      } else if (ct === 'application/pdf') {
+        const wrap = document.createElement('div');
+        wrap.className = 'media-preview';
+        const frame = document.createElement('iframe');
+        frame.src = data;
+        wrap.append(frame);
+        content.append(wrap);
+      }
+    });
   }
   const meta = document.createElement('time');
   meta.className = 'meta';
@@ -137,6 +175,7 @@ function appendBubble(msg) {
   replyBtn.textContent = '↩ Antworten';
   replyBtn.onclick = () => {
     state.replyToMessageId = msg.external_message_id || null;
+    updateReplyBanner();
     el.messageInput.focus();
   };
   actions.append(replyBtn);
@@ -244,6 +283,15 @@ function fileToBase64(file) {
   });
 }
 
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Datei konnte nicht gelesen werden'));
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.readAsDataURL(file);
+  });
+}
+
 async function loadSettings() {
   state.settings = await api('/api/settings');
   const f = document.getElementById('settingsForm');
@@ -254,6 +302,7 @@ async function loadSettings() {
   f.filter_promotions.checked = asBool(state.settings.filter_promotions);
   f.strip_replies.checked = asBool(state.settings.strip_replies);
   f.mark_read_on_open.checked = asBool(state.settings.mark_read_on_open);
+  f.os_contact_sync_enabled.checked = asBool(state.settings.os_contact_sync_enabled);
   restartPolling();
 }
 
@@ -285,6 +334,13 @@ async function loadContacts() {
   state.contactNames.clear();
   const rows = await api(`/api/contacts?account_id=${state.accountId}`);
   rows.forEach((r) => state.contactNames.set(r.email, r.display_name || r.email));
+}
+
+async function loadAddressBook() {
+  if (!state.accountId) return;
+  const rows = await api(`/api/address_book?account_id=${state.accountId}`);
+  state.addressBook.clear();
+  rows.forEach((r) => state.addressBook.set(r.email, r));
 }
 
 async function loadChats() {
@@ -322,9 +378,18 @@ async function loadGroups() {
 }
 
 async function refreshSidebars() {
+  await loadAddressBook();
   await loadContacts();
   await loadChats();
   await loadGroups();
+}
+
+function updateAddToBookVisibility() {
+  if (!state.activeContact) {
+    el.addToBookBtn.hidden = true;
+    return;
+  }
+  el.addToBookBtn.hidden = state.addressBook.has(state.activeContact);
 }
 
 async function openContactChat(email) {
@@ -333,6 +398,7 @@ async function openContactChat(email) {
   state.activeGroup = null;
   state.activeContact = email;
   el.contactInfo.textContent = `${displayName(email)} • ${email}`;
+  updateAddToBookVisibility();
   if (state.mobileMode) el.shell.classList.add('chat-open');
 
   const markRead = asBool(state.settings?.mark_read_on_open) ? 1 : 0;
@@ -349,6 +415,7 @@ async function openGroupChat(groupId, name, members) {
   state.activeContact = null;
   state.activeGroup = groupId;
   el.contactInfo.textContent = `👥 ${name} • ${members} Mitglieder`;
+  updateAddToBookVisibility();
   if (state.mobileMode) el.shell.classList.add('chat-open');
 
   const rows = await api(`/api/group_messages?account_id=${state.accountId}&group_id=${state.activeGroup}&since_id=0`);
@@ -389,11 +456,15 @@ async function sendCurrentMessage(e) {
   if (!state.accountId) return alert('Bitte zuerst ein Konto hinzufügen.');
   const body = el.messageInput.value.trim();
   const isHtml = document.getElementById('htmlMode').checked;
-  const files = await Promise.all(Array.from(el.attachmentInput.files || []).map(async (file) => ({
-    name: file.name,
-    content_type: file.type || 'application/octet-stream',
-    data: await fileToBase64(file),
-  })));
+  const files = await Promise.all(Array.from(el.attachmentInput.files || []).map(async (file) => {
+    const [b64, dataUrl] = await Promise.all([fileToBase64(file), fileToDataUrl(file)]);
+    return {
+      name: file.name,
+      content_type: file.type || 'application/octet-stream',
+      data: b64,
+      preview_url: dataUrl,
+    };
+  }));
   if (!body && !files.length) return;
   state.isSending = true;
   el.sendButton.disabled = true;
@@ -421,6 +492,7 @@ async function sendCurrentMessage(e) {
     el.attachmentInput.value = '';
     el.attachmentBtn.textContent = '📎';
     state.replyToMessageId = null;
+    updateReplyBanner();
   } finally {
     state.isSending = false;
     el.sendButton.disabled = false;
@@ -461,10 +533,14 @@ async function pollRealtime() {
   state.isPolling = true;
   try {
     if (asBool(state.settings?.auto_sync_enabled)) {
-      setSyncState('syncing');
-      await api('/api/sync', { method: 'POST', body: JSON.stringify({ account_id: state.accountId }) });
-      await refreshSidebars();
-      setSyncState('ok');
+      state.syncTick += 1;
+      const doSync = state.syncTick % 5 === 0 || !document.hidden;
+      if (doSync) {
+        setSyncState('syncing');
+        await api('/api/sync', { method: 'POST', body: JSON.stringify({ account_id: state.accountId }) });
+        await refreshSidebars();
+        setSyncState('ok');
+      }
     }
     await updateActiveChatIncremental();
   } finally {
@@ -497,6 +573,7 @@ function bindUi() {
   };
   document.getElementById('closeDialogBtn').onclick = () => document.getElementById('accountDialog').close();
   document.getElementById('settingsBtn').onclick = () => el.settingsDialog.showModal();
+  el.settingsTopBtn.onclick = () => el.settingsDialog.showModal();
   document.getElementById('closeSettingsBtn').onclick = () => el.settingsDialog.close();
 
   el.modeSwitchBtn.onclick = () => {
@@ -512,8 +589,31 @@ function bindUi() {
     state.activeGroup = null;
     el.contactInfo.textContent = 'Kein Chat ausgewählt';
     el.messages.innerHTML = '<p class="empty">Wähle links einen Kontakt oder eine Gruppe.</p>';
+    updateAddToBookVisibility();
     loadChats();
     loadGroups();
+  };
+
+  el.clearReplyBtn.onclick = () => {
+    state.replyToMessageId = null;
+    updateReplyBanner();
+  };
+
+  el.addToBookBtn.onclick = async () => {
+    if (!state.activeContact) return;
+    await api('/api/address_book', {
+      method: 'POST',
+      body: JSON.stringify({ account_id: state.accountId, email: state.activeContact, display_name: displayName(state.activeContact), source: 'chat' }),
+    });
+    await loadAddressBook();
+    updateAddToBookVisibility();
+    if (asBool(state.settings?.os_contact_sync_enabled) && navigator.contacts?.select) {
+      try {
+        await navigator.contacts.select(['name', 'email'], { multiple: true });
+      } catch {
+        // user canceled or unsupported
+      }
+    }
   };
 
   el.accountSelect.onchange = async (e) => {
@@ -547,10 +647,20 @@ function bindUi() {
   const newTypeSel = document.querySelector('#newEntityForm [name="type"]');
   const emailLabel = document.getElementById('newEntityEmailLabel');
   const membersLabel = document.getElementById('newEntityMembersLabel');
+  const membersList = document.getElementById('newEntityMembersList');
+  const rebuildMembersList = () => {
+    membersList.innerHTML = '';
+    [...state.addressBook.values()].forEach((c) => {
+      const row = document.createElement('label');
+      row.innerHTML = `<input type="checkbox" value="${c.email}" /><span>${c.display_name || c.email}</span>`;
+      membersList.append(row);
+    });
+  };
   const syncTypeUi = () => {
     const isGroup = newTypeSel.value === 'group';
     emailLabel.hidden = isGroup;
     membersLabel.hidden = !isGroup;
+    if (isGroup) rebuildMembersList();
   };
   syncTypeUi();
   newTypeSel.onchange = syncTypeUi;
@@ -569,7 +679,7 @@ function bindUi() {
       return;
     }
     const name = String(f.get('name') || '').trim();
-    const members = String(f.get('members') || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+    const members = [...membersList.querySelectorAll('input[type="checkbox"]:checked')].map((n) => n.value.toLowerCase());
     const created = await api('/api/groups', { method: 'POST', body: JSON.stringify({ account_id: state.accountId, name, members }) });
     el.newEntityDialog.close();
     await refreshSidebars();
@@ -595,6 +705,9 @@ function bindUi() {
   el.emojiBtn.onclick = () => {
     el.messageInput.focus();
     if (customElements.get('emoji-picker')) {
+      const r = el.emojiBtn.getBoundingClientRect();
+      el.emojiPickerWrap.style.left = `${Math.max(8, r.left - 20)}px`;
+      el.emojiPickerWrap.style.top = `${Math.max(8, r.top - 360)}px`;
       el.emojiPickerWrap.hidden = !el.emojiPickerWrap.hidden;
       return;
     }
@@ -764,6 +877,7 @@ function bindUi() {
         filter_promotions: f.get('filter_promotions') === 'on' ? '1' : '0',
         strip_replies: f.get('strip_replies') === 'on' ? '1' : '0',
         mark_read_on_open: f.get('mark_read_on_open') === 'on' ? '1' : '0',
+        os_contact_sync_enabled: f.get('os_contact_sync_enabled') === 'on' ? '1' : '0',
       }),
     });
     el.settingsDialog.close();

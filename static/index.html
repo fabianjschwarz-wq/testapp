@@ -43,7 +43,14 @@
       <div class="chat-top">
         <button id="mobileBackBtn" class="ghost mobile-only" type="button">← Zurück</button>
         <div class="contact-info" id="contactInfo">Kein Chat ausgewählt</div>
+        <button id="addToBookBtn" class="ghost" type="button" title="Zum Kontaktbuch hinzufügen" hidden>＋ Kontakt</button>
+        <button id="settingsTopBtn" class="ghost" type="button" title="Einstellungen">⚙️</button>
         <button id="errorBtn" class="ghost error-btn" type="button" title="Fehler anzeigen">⚠️</button>
+      </div>
+
+      <div id="replyBanner" class="reply-banner" hidden>
+        <span id="replyBannerText">Antwort auf Nachricht</span>
+        <button id="clearReplyBtn" type="button" class="ghost">✕</button>
       </div>
 
       <div id="messages" class="messages"></div>
@@ -77,7 +84,7 @@
           <option value="plain">Plain</option>
         </select>
       </label>
-      <label>Passwort / App-Passwort<input name="password" type="password" required /></label>
+      <label>Passwort / App-Passwort<input name="password" type="password" /></label>
       <label><input name="use_ssl" type="checkbox" checked /> IMAP SSL verwenden</label>
       <div class="dialog-actions">
         <button type="button" id="closeDialogBtn" class="ghost">Abbrechen</button>
@@ -96,6 +103,7 @@
       <label><input name="filter_promotions" type="checkbox" /> Werbe-/List-Mails filtern</label>
       <label><input name="strip_replies" type="checkbox" /> Zitatverläufe aus Antworten entfernen</label>
       <label><input name="mark_read_on_open" type="checkbox" /> Nachrichten beim Chat-Öffnen als gelesen markieren</label>
+      <label><input name="os_contact_sync_enabled" type="checkbox" /> OS-Kontakte synchronisieren (wenn verfügbar)</label>
       <div class="dialog-actions">
         <button type="button" id="closeSettingsBtn" class="ghost">Schließen</button>
         <button type="submit">Speichern</button>
@@ -131,7 +139,7 @@
     </form>
   </dialog>
 
-  <button id="settingsBtn" class="settings-fab" title="Einstellungen">⚙️</button>
+  <button id="settingsBtn" class="settings-fab" title="Einstellungen" hidden>⚙️</button>
 
   <div id="chatContextMenu" class="context-menu" hidden>
     <button id="ctxEditBtn" type="button">Bearbeiten</button>
@@ -153,7 +161,9 @@
       </label>
       <label>Name<input name="name" required /></label>
       <label id="newEntityEmailLabel">E-Mail (Kontakt)<input name="email" type="email" /></label>
-      <label id="newEntityMembersLabel" hidden>Mitglieder (Komma getrennt)<input name="members" placeholder="a@x.de,b@y.de" /></label>
+      <label id="newEntityMembersLabel" hidden>Mitglieder aus Kontaktbuch
+        <div id="newEntityMembersList" class="members-list"></div>
+      </label>
       <div class="dialog-actions">
         <button type="button" id="closeNewEntityBtn" class="ghost">Abbrechen</button>
         <button type="submit">Erstellen</button>

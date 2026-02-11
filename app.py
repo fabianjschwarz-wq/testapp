@@ -34,6 +34,7 @@ DEFAULT_SETTINGS = {
     "filter_promotions": "1",
     "strip_replies": "1",
     "mark_read_on_open": "1",
+    "os_contact_sync_enabled": "0",
 }
 
 
@@ -84,6 +85,18 @@ def init_db() -> None:
                 group_id INTEGER NOT NULL,
                 email TEXT NOT NULL,
                 UNIQUE(group_id, email)
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS address_book (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id INTEGER NOT NULL,
+                email TEXT NOT NULL,
+                display_name TEXT,
+                avatar_url TEXT,
+                source TEXT NOT NULL DEFAULT 'manual',
+                created_at TEXT NOT NULL,
+                UNIQUE(account_id, email)
             )
         """)
         conn.execute("""
@@ -282,6 +295,7 @@ def maybe_process_read_receipt(account_id: int, msg) -> bool:
     is_mdn = (
         "disposition-notification" in ctype
         or "multipart/report" in ctype
+        or "empfangsbestätigung" in body_l
         or ("empfangsbestätigung" in subject_l and "original-message-id" in body_l)
         or ("lesebestätigung" in subject_l and "original-message-id" in body_l)
         or ("read receipt" in subject_l and "original-message-id" in body_l)
@@ -318,6 +332,16 @@ def maybe_process_read_receipt(account_id: int, msg) -> bool:
             (utc_now_iso(), existing["id"]),
         )
         return True
+    recipient_match = re.search(r"an\s+([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})\s+gesendet", body or "", re.IGNORECASE)
+    if recipient_match:
+        recipient = recipient_match.group(1).lower().strip()
+        last = db_fetch_one(
+            "SELECT id FROM messages WHERE account_id=? AND direction='outbound' AND contact_email=? ORDER BY sent_at DESC, id DESC LIMIT 1",
+            (account_id, recipient),
+        )
+        if last:
+            db_execute("UPDATE messages SET delivery_status='read', read_at=COALESCE(read_at, ?) WHERE id=?", (utc_now_iso(), last["id"]))
+            return True
     # Even when we cannot map the receipt to a message-id, keep it out of chat history.
     return True
 
@@ -683,6 +707,13 @@ class AppHandler(BaseHTTPRequestHandler):
                 ORDER BY g.name
             """, (account_id,))
             return json_response(self, groups)
+        if parsed.path == "/api/address_book":
+            account_id = int((parse_qs(parsed.query).get("account_id") or ["0"])[0])
+            rows = db_fetch_all(
+                "SELECT email, COALESCE(display_name,'') AS display_name, COALESCE(avatar_url,'') AS avatar_url, source FROM address_book WHERE account_id=? ORDER BY COALESCE(display_name,email)",
+                (account_id,),
+            )
+            return json_response(self, rows)
         if parsed.path == "/api/group_messages":
             params = parse_qs(parsed.query)
             account_id = int((params.get("account_id") or ["0"])[0])
@@ -797,6 +828,17 @@ class AppHandler(BaseHTTPRequestHandler):
                 for email in data.get("members", []):
                     db_execute("INSERT OR IGNORE INTO group_members(group_id,email) VALUES(?,?)", (group_id, email.lower().strip()))
                 return json_response(self, {"id": group_id}, 201)
+            if parsed.path == "/api/address_book":
+                data = parse_json_body(self)
+                account_id = int(data["account_id"])
+                email = (data.get("email") or "").lower().strip()
+                if not email:
+                    return json_response(self, {"error": "email fehlt"}, 400)
+                db_execute(
+                    "INSERT INTO address_book(account_id,email,display_name,avatar_url,source,created_at) VALUES(?,?,?,?,?,?) ON CONFLICT(account_id,email) DO UPDATE SET display_name=excluded.display_name, avatar_url=excluded.avatar_url, source=excluded.source",
+                    (account_id, email, data.get("display_name") or None, data.get("avatar_url") or None, data.get("source") or "manual", utc_now_iso()),
+                )
+                return json_response(self, {"ok": True}, 201)
             if parsed.path == "/api/profile":
                 data = parse_json_body(self)
                 account_id = int(data["account_id"])

@@ -92,7 +92,18 @@ button.full { width: 100%; }
   border-bottom: 1px solid #1f2c34;
   align-items: center;
 }
-.error-btn { min-width: 40px; padding: 8px; }
+.error-btn { min-width: 28px; padding: 6px; font-size: 0.85rem; }
+
+.reply-banner {
+  display: grid;
+  grid-template-columns: minmax(0,1fr) auto;
+  gap: 8px;
+  align-items: center;
+  background: #1e2d36;
+  border-bottom: 1px solid #30424d;
+  padding: 6px 12px;
+  color: #c3d5dd;
+}
 
 .splitter {
   background: #22313a;
@@ -128,6 +139,9 @@ button.full { width: 100%; }
 .bubble .content { white-space: pre-wrap; overflow-wrap: anywhere; }
 .bubble .meta { color: #9fb3bd; font-size: 0.72rem; justify-self: end; }
 .attachments { margin-top: 8px; font-size: 0.82rem; color: #b7c9d1; }
+.media-preview { margin-top: 8px; border-radius: 8px; overflow: hidden; background: #0d1820; border: 1px solid #2d3d48; }
+.media-preview img { display: block; max-width: 280px; max-height: 220px; object-fit: cover; }
+.media-preview iframe { width: 280px; height: 220px; border: none; background: #fff; }
 .bubble-actions { display: none; position: absolute; top: -12px; right: 6px; gap: 6px; }
 .bubble:hover .bubble-actions { display: flex; }
 .bubble-actions button { padding: 4px 8px; font-size: 0.75rem; }
@@ -170,8 +184,6 @@ button.full { width: 100%; }
 
 .emoji-picker-wrap {
   position: fixed;
-  right: 24px;
-  bottom: 96px;
   z-index: 19;
   border: 1px solid #32414b;
   border-radius: 12px;
@@ -191,6 +203,18 @@ button.full { width: 100%; }
   margin: 0;
   white-space: pre-wrap;
 }
+
+.members-list {
+  max-height: 160px;
+  overflow: auto;
+  border: 1px solid #3b4a54;
+  border-radius: 8px;
+  padding: 6px;
+  background: #2a3942;
+  display: grid;
+  gap: 6px;
+}
+.members-list label { color: var(--text) !important; grid-template-columns: auto 1fr; align-items: center; }
 
 .mobile-only { display: none; }
 .settings-fab { position: fixed; right: 18px; bottom: 92px; z-index: 4; }
