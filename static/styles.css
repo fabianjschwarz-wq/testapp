@@ -82,7 +82,7 @@ button.full { width: 100%; }
 .badge { background: var(--accent); color: #042018; font-size: 0.74rem; border-radius: 999px; padding: 2px 8px; font-weight: 700; }
 .preview { color: var(--muted); font-size: 0.85rem; margin-top: 4px; }
 
-.chat-main { min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; background: #0f1a20; }
+.chat-main { min-height: 0; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; background: #0f1a20; }
 .chat-top {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
@@ -92,7 +92,8 @@ button.full { width: 100%; }
   border-bottom: 1px solid #1f2c34;
   align-items: center;
 }
-.error-btn { min-width: 28px; padding: 6px; font-size: 0.85rem; }
+.icon-btn { min-width: 32px; width: 32px; height: 32px; padding: 4px; display: inline-flex; align-items: center; justify-content: center; }
+.error-btn { min-width: 32px; font-size: 0.82rem; }
 
 .reply-banner {
   display: grid;
@@ -102,8 +103,10 @@ button.full { width: 100%; }
   background: #1e2d36;
   border-bottom: 1px solid #30424d;
   padding: 6px 12px;
-  color: #c3d5dd;
+  color: #9fb5bf;
+  font-size: 0.86rem;
 }
+.reply-banner .ghost { padding: 4px 8px; font-size: 0.75rem; }
 
 .splitter {
   background: #22313a;

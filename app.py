@@ -35,6 +35,7 @@ DEFAULT_SETTINGS = {
     "strip_replies": "1",
     "mark_read_on_open": "1",
     "os_contact_sync_enabled": "0",
+    "send_custom_read_receipts": "1",
 }
 
 
@@ -152,6 +153,10 @@ def init_db() -> None:
             conn.execute("ALTER TABLE messages ADD COLUMN is_read INTEGER NOT NULL DEFAULT 0")
         if "read_at" not in cols:
             conn.execute("ALTER TABLE messages ADD COLUMN read_at TEXT")
+        if "has_internal_read_receipt_request" not in cols:
+            conn.execute("ALTER TABLE messages ADD COLUMN has_internal_read_receipt_request INTEGER NOT NULL DEFAULT 0")
+        if "read_receipt_sent_at" not in cols:
+            conn.execute("ALTER TABLE messages ADD COLUMN read_receipt_sent_at TEXT")
         contact_cols = {row[1] for row in conn.execute("PRAGMA table_info(contacts)").fetchall()}
         if "avatar_url" not in contact_cols:
             conn.execute("ALTER TABLE contacts ADD COLUMN avatar_url TEXT")
@@ -468,6 +473,68 @@ def upsert_contact(account_id: int, email: str, display_name: str | None = None)
         db_execute("UPDATE contacts SET display_name=? WHERE account_id=? AND email=?", (display_name, account_id, email))
 
 
+def append_to_sent_mailbox(account: dict, msg: EmailMessage, when_iso: str):
+    try:
+        client = imaplib.IMAP4_SSL(account["imap_host"], account["imap_port"]) if account["use_ssl"] else imaplib.IMAP4(account["imap_host"], account["imap_port"])
+        try:
+            client.login(account["email"], account["password"])
+            names = list_mailboxes(client)
+            candidates = ["Sent", "Sent Messages", "INBOX.Sent", "Gesendet", "INBOX.Gesendet"] + names
+            selected = None
+            for box in candidates:
+                if not box:
+                    continue
+                status, _ = client.select(f'"{box}"', readonly=False)
+                if status == "OK":
+                    selected = box
+                    break
+            if not selected:
+                return
+            dt = datetime.fromisoformat(when_iso.replace("Z", "+00:00"))
+            date_str = dt.strftime("%d-%b-%Y %H:%M:%S +0000")
+            client.append(selected, "", date_str, msg.as_bytes())
+        finally:
+            try:
+                client.logout()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def send_custom_read_receipt(account_id: int, msg_row: dict):
+    settings = get_settings()
+    if not setting_bool(settings, "send_custom_read_receipts"):
+        return
+    if int(msg_row.get("has_internal_read_receipt_request") or 0) == 1:
+        return
+    account = db_fetch_one("SELECT * FROM accounts WHERE id=?", (account_id,))
+    if not account:
+        return
+    if msg_row.get("direction") != "inbound":
+        return
+    if msg_row.get("read_receipt_sent_at"):
+        return
+
+    to_email = msg_row.get("contact_email")
+    if not to_email:
+        return
+    text = (
+        f"Dies ist eine Empfangsbestätigung für Ihre Nachricht an {account['email']}.\n\n"
+        "Die Nachricht wurde in der Chat-App als gelesen markiert."
+    )
+    receipt = EmailMessage()
+    receipt["From"] = account["email"]
+    receipt["To"] = to_email
+    receipt["Subject"] = f"Empfangsbestätigung: {msg_row.get('subject') or 'Nachricht'}"
+    if msg_row.get("external_message_id"):
+        receipt["In-Reply-To"] = msg_row["external_message_id"]
+        receipt["References"] = msg_row["external_message_id"]
+    receipt.set_content(text)
+    smtp_send_with_security(account, receipt)
+    db_execute("UPDATE messages SET read_receipt_sent_at=? WHERE id=?", (utc_now_iso(), int(msg_row["id"])))
+
+
 def smtp_send_with_security(account, msg: EmailMessage):
     security = (account.get("smtp_security") or "auto").lower()
     host = account["smtp_host"]
@@ -577,7 +644,11 @@ def sync_account(account_id: int):
                     """,
                     (account_id, sender, subject, body or "", body_html, sent_at, msg.get("Message-ID"), utc_now_iso()),
                 )
-                db_execute("UPDATE messages SET attachments_json=?, in_reply_to_message_id=?, delivery_status='sent', is_read=0 WHERE account_id=? AND external_message_id=?", (json.dumps(attachments), msg.get("In-Reply-To"), account_id, msg.get("Message-ID")))
+                has_rr = 1 if (msg.get("Disposition-Notification-To") or msg.get("Return-Receipt-To")) else 0
+                db_execute(
+                    "UPDATE messages SET attachments_json=?, in_reply_to_message_id=?, delivery_status='sent', is_read=0, has_internal_read_receipt_request=? WHERE account_id=? AND external_message_id=?",
+                    (json.dumps(attachments), msg.get("In-Reply-To"), has_rr, account_id, msg.get("Message-ID")),
+                )
                 saved += 1
             except sqlite3.IntegrityError:
                 continue
@@ -631,9 +702,15 @@ def send_message(account_id: int, to_email: str, body: str, is_html: bool = Fals
         subtype = mime[1] if len(mime) > 1 else "octet-stream"
         fname = a.get("name") or "attachment"
         msg.add_attachment(raw, maintype=maintype, subtype=subtype, filename=fname)
-        safe_attachments.append({"name": fname, "content_type": f"{maintype}/{subtype}", "size": len(raw)})
+        safe_attachments.append({
+            "name": fname,
+            "content_type": f"{maintype}/{subtype}",
+            "size": len(raw),
+            "preview_url": a.get("preview_url") if isinstance(a, dict) else None,
+        })
 
     smtp_send_with_security(account, msg)
+    append_to_sent_mailbox(account, msg, now)
     upsert_contact(account_id, to_email, None)
 
     msg_id = db_execute(
@@ -710,7 +787,7 @@ class AppHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/address_book":
             account_id = int((parse_qs(parsed.query).get("account_id") or ["0"])[0])
             rows = db_fetch_all(
-                "SELECT email, COALESCE(display_name,'') AS display_name, COALESCE(avatar_url,'') AS avatar_url, source FROM address_book WHERE account_id=? ORDER BY COALESCE(display_name,email)",
+                "SELECT email, COALESCE(display_name,'') AS display_name, COALESCE(avatar_url,'') AS avatar_url, 'contacts' AS source FROM contacts WHERE account_id=? ORDER BY COALESCE(display_name,email)",
                 (account_id,),
             )
             return json_response(self, rows)
@@ -763,6 +840,12 @@ class AppHandler(BaseHTTPRequestHandler):
                 for r in rows:
                     if r["direction"] == "inbound":
                         r["is_read"] = 1
+                to_receipt = db_fetch_all(
+                    "SELECT id, account_id, contact_email, subject, external_message_id, direction, COALESCE(has_internal_read_receipt_request,0) AS has_internal_read_receipt_request, read_receipt_sent_at FROM messages WHERE account_id=? AND contact_email=? AND direction='inbound' AND COALESCE(is_read,0)=1 AND read_receipt_sent_at IS NULL",
+                    (account_id, contact),
+                )
+                for msg_row in to_receipt:
+                    send_custom_read_receipt(account_id, msg_row)
             for r in rows:
                 try:
                     r["attachments"] = json.loads(r.get("attachments_json") or "[]")
@@ -834,10 +917,9 @@ class AppHandler(BaseHTTPRequestHandler):
                 email = (data.get("email") or "").lower().strip()
                 if not email:
                     return json_response(self, {"error": "email fehlt"}, 400)
-                db_execute(
-                    "INSERT INTO address_book(account_id,email,display_name,avatar_url,source,created_at) VALUES(?,?,?,?,?,?) ON CONFLICT(account_id,email) DO UPDATE SET display_name=excluded.display_name, avatar_url=excluded.avatar_url, source=excluded.source",
-                    (account_id, email, data.get("display_name") or None, data.get("avatar_url") or None, data.get("source") or "manual", utc_now_iso()),
-                )
+                upsert_contact(account_id, email, data.get("display_name") or None)
+                if "avatar_url" in data:
+                    db_execute("UPDATE contacts SET avatar_url=? WHERE account_id=? AND email=?", (data.get("avatar_url") or None, account_id, email))
                 return json_response(self, {"ok": True}, 201)
             if parsed.path == "/api/profile":
                 data = parse_json_body(self)
@@ -866,6 +948,12 @@ class AppHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/messages/read":
                 data = parse_json_body(self)
                 db_execute("UPDATE messages SET is_read=1, read_at=COALESCE(read_at, ?) WHERE id=? AND account_id=? AND direction='inbound'", (utc_now_iso(), int(data["id"]), int(data["account_id"])))
+                msg_row = db_fetch_one(
+                    "SELECT id, account_id, contact_email, subject, external_message_id, direction, COALESCE(has_internal_read_receipt_request,0) AS has_internal_read_receipt_request, read_receipt_sent_at FROM messages WHERE id=? AND account_id=?",
+                    (int(data["id"]), int(data["account_id"])),
+                )
+                if msg_row:
+                    send_custom_read_receipt(int(data["account_id"]), msg_row)
                 return json_response(self, {"ok": True}, 200)
         except Exception as e:
             try:

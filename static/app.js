@@ -303,6 +303,7 @@ async function loadSettings() {
   f.strip_replies.checked = asBool(state.settings.strip_replies);
   f.mark_read_on_open.checked = asBool(state.settings.mark_read_on_open);
   f.os_contact_sync_enabled.checked = asBool(state.settings.os_contact_sync_enabled);
+  f.send_custom_read_receipts.checked = asBool(state.settings.send_custom_read_receipts);
   restartPolling();
 }
 
@@ -550,8 +551,9 @@ async function pollRealtime() {
 
 function restartPolling() {
   if (state.pollingHandle) clearInterval(state.pollingHandle);
-  const ms = Math.max(500, Number(state.settings?.poll_interval_ms || 1000));
+  const ms = Math.max(300, Number(state.settings?.poll_interval_ms || 1000));
   state.pollingHandle = setInterval(() => pollRealtime().catch(() => {}), ms);
+  pollRealtime().catch(() => {});
 }
 
 async function ensureNotificationPermission() {
@@ -878,6 +880,7 @@ function bindUi() {
         strip_replies: f.get('strip_replies') === 'on' ? '1' : '0',
         mark_read_on_open: f.get('mark_read_on_open') === 'on' ? '1' : '0',
         os_contact_sync_enabled: f.get('os_contact_sync_enabled') === 'on' ? '1' : '0',
+        send_custom_read_receipts: f.get('send_custom_read_receipts') === 'on' ? '1' : '0',
       }),
     });
     el.settingsDialog.close();
