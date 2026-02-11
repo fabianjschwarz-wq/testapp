@@ -157,6 +157,17 @@ button.full { width: 100%; }
 }
 .context-menu button:hover { background: #2a3942; }
 
+.emoji-picker-wrap {
+  position: fixed;
+  right: 24px;
+  bottom: 96px;
+  z-index: 19;
+  border: 1px solid #32414b;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 10px 24px rgb(0 0 0 / 0.35);
+}
+
 .mobile-only { display: none; }
 .settings-fab { position: fixed; right: 18px; bottom: 92px; z-index: 4; }
 #accountDialog, #settingsDialog { border: none; border-radius: 12px; padding: 0; }

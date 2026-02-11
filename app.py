@@ -273,11 +273,10 @@ def maybe_process_read_receipt(account_id: int, msg) -> bool:
     is_mdn = (
         "disposition-notification" in ctype
         or "multipart/report" in ctype
-        or "empfangsbestätigung" in subject_l
-        or "lesebestätigung" in subject_l
-        or "read receipt" in subject_l
-        or "original-message-id" in body_l
-        or any("mdn" in name for name in attachment_names)
+        or ("empfangsbestätigung" in subject_l and "original-message-id" in body_l)
+        or ("lesebestätigung" in subject_l and "original-message-id" in body_l)
+        or ("read receipt" in subject_l and "original-message-id" in body_l)
+        or any(name in {"mdnpart2.txt", "mdnpart3.txt"} for name in attachment_names)
     )
     if not is_mdn:
         return False
@@ -290,6 +289,16 @@ def maybe_process_read_receipt(account_id: int, msg) -> bool:
             _, _, v = line.partition(":")
             if v.strip():
                 candidates.append(v.strip())
+    for part in msg.walk() if msg.is_multipart() else []:
+        payload = part.get_payload(decode=True) or b""
+        if not payload:
+            continue
+        txt = payload.decode(part.get_content_charset() or "utf-8", errors="ignore")
+        for line in txt.splitlines():
+            if "original-message-id" in line.lower():
+                _, _, v = line.partition(":")
+                if v.strip():
+                    candidates.append(v.strip())
 
     for mid in candidates:
         existing = db_fetch_one("SELECT id FROM messages WHERE account_id=? AND direction='outbound' AND external_message_id=?", (account_id, mid.strip()))
@@ -302,6 +311,20 @@ def maybe_process_read_receipt(account_id: int, msg) -> bool:
         return True
     # Even when we cannot map the receipt to a message-id, keep it out of chat history.
     return True
+
+
+def mark_referenced_outbound_as_read(account_id: int, msg) -> bool:
+    ref = (msg.get("In-Reply-To") or "").strip()
+    if not ref:
+        return False
+    refs = [r.strip() for r in re.split(r"\s+", ref) if r.strip()]
+    for mid in refs:
+        row = db_fetch_one("SELECT id FROM messages WHERE account_id=? AND direction='outbound' AND external_message_id=?", (account_id, mid))
+        if not row:
+            continue
+        db_execute("UPDATE messages SET delivery_status='read', read_at=COALESCE(read_at, ?) WHERE id=?", (utc_now_iso(), row["id"]))
+        return True
+    return False
 
 
 def parse_from_header(from_header: str) -> tuple[str, str | None]:
@@ -418,6 +441,8 @@ def sync_account(account_id: int):
             sender, sender_name = parse_from_header(msg.get("From", ""))
             if not sender or sender == account["email"].lower():
                 continue
+
+            mark_referenced_outbound_as_read(account_id, msg)
 
             subject = msg.get("Subject", "")
             if should_skip_message(sender, subject, msg, settings):
@@ -698,6 +723,18 @@ class AppHandler(BaseHTTPRequestHandler):
                 db_execute("DELETE FROM group_members WHERE group_id=?", (group_id,))
                 db_execute("DELETE FROM group_messages WHERE account_id=? AND group_id=?", (account_id, group_id))
                 db_execute("DELETE FROM chat_groups WHERE id=? AND account_id=?", (group_id, account_id))
+                return json_response(self, {"ok": True}, 200)
+            if parsed.path == "/api/messages":
+                params = parse_qs(parsed.query)
+                account_id = int((params.get("account_id") or ["0"])[0])
+                msg_id = int((params.get("id") or ["0"])[0])
+                db_execute("DELETE FROM messages WHERE id=? AND account_id=?", (msg_id, account_id))
+                return json_response(self, {"ok": True}, 200)
+            if parsed.path == "/api/group_messages":
+                params = parse_qs(parsed.query)
+                account_id = int((params.get("account_id") or ["0"])[0])
+                msg_id = int((params.get("id") or ["0"])[0])
+                db_execute("DELETE FROM group_messages WHERE id=? AND account_id=?", (msg_id, account_id))
                 return json_response(self, {"ok": True}, 200)
         except Exception as e:
             return json_response(self, {"error": str(e)}, 500)

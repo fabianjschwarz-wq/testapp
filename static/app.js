@@ -33,6 +33,8 @@ const el = {
   emojiBtn: document.getElementById('emojiBtn'),
   chatContextMenu: document.getElementById('chatContextMenu'),
   ctxDeleteBtn: document.getElementById('ctxDeleteBtn'),
+  emojiPickerWrap: document.getElementById('emojiPickerWrap'),
+  emojiPicker: document.getElementById('emojiPicker'),
 };
 
 async function api(path, options = {}) {
@@ -110,6 +112,8 @@ function appendBubble(msg) {
     actions.append(readBtn);
   }
   bubble.append(content, meta, actions);
+  const kind = msg.__kind || 'message';
+  addDeleteMenuHandlers(bubble, kind, msg.id);
   el.messages.append(bubble);
 }
 
@@ -150,6 +154,34 @@ function addDeleteMenuHandlers(node, kind, id) {
   node.addEventListener('pointerup', cancel);
   node.addEventListener('pointercancel', cancel);
   node.addEventListener('pointerleave', cancel);
+}
+
+async function initEmojiPicker() {
+  try {
+    await import('https://cdn.jsdelivr.net/npm/emoji-picker-element@^1/index.js');
+    el.emojiPicker.addEventListener('emoji-click', (ev) => {
+      const emoji = ev?.detail?.unicode;
+      if (!emoji) return;
+      el.messageInput.value += `${emoji}`;
+      el.messageInput.focus();
+      el.emojiPickerWrap.hidden = true;
+    });
+  } catch {
+    // fallback handled in button click
+  }
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Datei konnte nicht gelesen werden'));
+    reader.onload = () => {
+      const result = String(reader.result || '');
+      const b64 = result.includes(',') ? result.split(',')[1] : '';
+      resolve(b64);
+    };
+    reader.readAsDataURL(file);
+  });
 }
 
 async function loadSettings() {
@@ -238,6 +270,7 @@ async function openContactChat(email) {
 
   const markRead = asBool(state.settings?.mark_read_on_open) ? 1 : 0;
   const rows = await api(`/api/messages?account_id=${state.accountId}&contact=${encodeURIComponent(state.activeContact)}&since_id=0&mark_read=${markRead}`);
+  rows.forEach((r) => { r.__kind = 'message'; });
   if (token !== state.openChatToken || state.activeContact !== email) return;
   renderBubbles(rows);
   state.chatLastId.set(`contact:${state.activeContact}`, rows.at(-1)?.id || 0);
@@ -252,6 +285,7 @@ async function openGroupChat(groupId, name, members) {
   if (state.mobileMode) el.shell.classList.add('chat-open');
 
   const rows = await api(`/api/group_messages?account_id=${state.accountId}&group_id=${state.activeGroup}&since_id=0`);
+  rows.forEach((r) => { r.__kind = 'group_message'; });
   if (token !== state.openChatToken || state.activeGroup !== groupId) return;
   renderBubbles(rows);
   state.chatLastId.set(`group:${state.activeGroup}`, rows.at(-1)?.id || 0);
@@ -292,7 +326,7 @@ async function sendCurrentMessage(e) {
   const files = await Promise.all(Array.from(el.attachmentInput.files || []).map(async (file) => ({
     name: file.name,
     content_type: file.type || 'application/octet-stream',
-    data: btoa(String.fromCharCode(...new Uint8Array(await file.arrayBuffer()))),
+    data: await fileToBase64(file),
   })));
   state.isSending = true;
   el.sendButton.disabled = true;
@@ -333,6 +367,7 @@ async function updateActiveChatIncremental() {
     const key = `contact:${state.activeContact}`;
     const since = state.chatLastId.get(key) || 0;
     const rows = await api(`/api/messages?account_id=${state.accountId}&contact=${encodeURIComponent(state.activeContact)}&since_id=${since}`);
+    rows.forEach((r) => { r.__kind = 'message'; });
     if (rows.length) {
       rows.forEach(appendBubble);
       state.chatLastId.set(key, rows.at(-1).id);
@@ -344,6 +379,7 @@ async function updateActiveChatIncremental() {
     const key = `group:${state.activeGroup}`;
     const since = state.chatLastId.get(key) || 0;
     const rows = await api(`/api/group_messages?account_id=${state.accountId}&group_id=${state.activeGroup}&since_id=${since}`);
+    rows.forEach((r) => { r.__kind = 'group_message'; });
     if (rows.length) {
       rows.forEach(appendBubble);
       state.chatLastId.set(key, rows.at(-1).id);
@@ -440,9 +476,13 @@ function bindUi() {
   };
   el.emojiBtn.onclick = () => {
     el.messageInput.focus();
+    if (customElements.get('emoji-picker')) {
+      el.emojiPickerWrap.hidden = !el.emojiPickerWrap.hidden;
+      return;
+    }
     const ua = navigator.userAgent || '';
     const hint = /Mac/.test(ua) ? '⌃⌘ Leertaste' : (/Windows/.test(ua) ? 'Win + .' : 'System-Emoji-Shortcut');
-    alert(`Öffne das System-Emoji-Feld mit: ${hint}`);
+    alert(`Emoji-Picker konnte nicht geladen werden. Nutze das System-Emoji-Feld mit: ${hint}`);
   };
   el.attachmentBtn.onclick = () => el.attachmentInput.click();
   el.attachmentInput.onchange = () => {
@@ -470,10 +510,25 @@ function bindUi() {
       }
       await refreshSidebars();
     }
+    if (kind === 'message' && id && state.accountId) {
+      await api(`/api/messages?account_id=${state.accountId}&id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+      if (state.activeContact) await openContactChat(state.activeContact);
+    }
+    if (kind === 'group_message' && id && state.accountId) {
+      await api(`/api/group_messages?account_id=${state.accountId}&id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+      if (state.activeGroup) {
+        const rows = await api(`/api/group_messages?account_id=${state.accountId}&group_id=${state.activeGroup}&since_id=0`);
+        rows.forEach((r) => { r.__kind = 'group_message'; });
+        renderBubbles(rows);
+      }
+    }
   };
 
   window.addEventListener('pointerdown', (e) => {
     if (!el.chatContextMenu.hidden && !el.chatContextMenu.contains(e.target)) hideContextMenu();
+    if (!el.emojiPickerWrap.hidden && !el.emojiPickerWrap.contains(e.target) && e.target !== el.emojiBtn) {
+      el.emojiPickerWrap.hidden = true;
+    }
   });
   window.addEventListener('scroll', hideContextMenu, true);
   window.addEventListener('resize', hideContextMenu);
@@ -521,6 +576,7 @@ function bindUi() {
 Promise.all([ensureNotificationPermission(), loadSettings()])
   .then(() => loadAccounts())
   .then(() => {
+    initEmojiPicker();
     bindUi();
     setModeLabel();
   })
