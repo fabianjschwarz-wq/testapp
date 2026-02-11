@@ -63,6 +63,7 @@ def init_db() -> None:
                 account_id INTEGER NOT NULL,
                 email TEXT NOT NULL,
                 display_name TEXT,
+                avatar_url TEXT,
                 UNIQUE(account_id, email)
             )
         """)
@@ -71,6 +72,7 @@ def init_db() -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 account_id INTEGER NOT NULL,
                 name TEXT NOT NULL,
+                avatar_url TEXT,
                 created_at TEXT NOT NULL,
                 UNIQUE(account_id, name)
             )
@@ -136,6 +138,12 @@ def init_db() -> None:
             conn.execute("ALTER TABLE messages ADD COLUMN is_read INTEGER NOT NULL DEFAULT 0")
         if "read_at" not in cols:
             conn.execute("ALTER TABLE messages ADD COLUMN read_at TEXT")
+        contact_cols = {row[1] for row in conn.execute("PRAGMA table_info(contacts)").fetchall()}
+        if "avatar_url" not in contact_cols:
+            conn.execute("ALTER TABLE contacts ADD COLUMN avatar_url TEXT")
+        group_cols = {row[1] for row in conn.execute("PRAGMA table_info(chat_groups)").fetchall()}
+        if "avatar_url" not in group_cols:
+            conn.execute("ALTER TABLE chat_groups ADD COLUMN avatar_url TEXT")
         ac_cols = {row[1] for row in conn.execute("PRAGMA table_info(accounts)").fetchall()}
         if "smtp_security" not in ac_cols:
             conn.execute("ALTER TABLE accounts ADD COLUMN smtp_security TEXT NOT NULL DEFAULT 'auto'")
@@ -327,6 +335,81 @@ def mark_referenced_outbound_as_read(account_id: int, msg) -> bool:
     return False
 
 
+def list_mailboxes(client) -> list[str]:
+    status, rows = client.list()
+    if status != "OK" or not rows:
+        return []
+    names = []
+    for raw in rows:
+        text = (raw.decode("utf-8", errors="ignore") if isinstance(raw, bytes) else str(raw)).strip()
+        m = re.search(r'"([^"]+)"\s*$', text)
+        if m:
+            names.append(m.group(1))
+    return names
+
+
+def sync_sent_mailbox(client, account: dict, account_id: int):
+    mailbox_candidates = ["Sent", "Sent Messages", "INBOX.Sent", "Gesendet", "INBOX.Gesendet"]
+    names = list_mailboxes(client)
+    preferred = mailbox_candidates + names
+    selected = None
+    for name in preferred:
+        if not name:
+            continue
+        status, _ = client.select(f'"{name}"', readonly=True)
+        if status == "OK":
+            selected = name
+            break
+    if not selected:
+        return 0
+
+    status, uid_data = client.uid("search", None, "ALL")
+    if status != "OK":
+        return 0
+    uids = [u for u in (uid_data[0] or b"").split() if u]
+    saved = 0
+    for uid in uids[-250:]:
+        status, payload = client.uid("fetch", uid, "(RFC822)")
+        if status != "OK" or not payload or payload[0] is None:
+            continue
+        raw = payload[0][1] if isinstance(payload[0], tuple) else None
+        if not raw:
+            continue
+        msg = message_from_bytes(raw)
+        sender, _ = parse_from_header(msg.get("From", ""))
+        if sender != account["email"].lower():
+            continue
+        to_list = [addr.lower().strip() for _, addr in getaddresses([msg.get("To", "")]) if addr]
+        if not to_list:
+            continue
+        contact = to_list[0]
+        body, body_html = extract_bodies(msg, strip_replies=setting_bool(get_settings(), "strip_replies"))
+        attachments = extract_attachments(msg)
+        if not body and not body_html and not attachments:
+            continue
+        try:
+            sent_at = parsedate_to_datetime(msg.get("Date")).astimezone(timezone.utc).isoformat()
+        except Exception:
+            sent_at = utc_now_iso()
+        try:
+            db_execute(
+                """
+                INSERT INTO messages(account_id, contact_email, direction, subject, body, body_html, sent_at, external_message_id, created_at)
+                VALUES (?, ?, 'outbound', ?, ?, ?, ?, ?, ?)
+                """,
+                (account_id, contact, msg.get("Subject") or "Chat-Nachricht", body or "", body_html, sent_at, msg.get("Message-ID"), utc_now_iso()),
+            )
+            db_execute(
+                "UPDATE messages SET attachments_json=?, in_reply_to_message_id=?, delivery_status='sent', is_read=1 WHERE account_id=? AND external_message_id=?",
+                (json.dumps(attachments), msg.get("In-Reply-To"), account_id, msg.get("Message-ID")),
+            )
+            upsert_contact(account_id, contact, None)
+            saved += 1
+        except sqlite3.IntegrityError:
+            continue
+    return saved
+
+
 def parse_from_header(from_header: str) -> tuple[str, str | None]:
     parsed = getaddresses([from_header])
     if parsed and parsed[0][1]:
@@ -472,11 +555,13 @@ def sync_account(account_id: int):
             except sqlite3.IntegrityError:
                 continue
 
+        sent_saved = sync_sent_mailbox(client, account, account_id)
+
         db_execute(
             "INSERT INTO sync_state(account_id,last_uid,updated_at) VALUES(?,?,?) ON CONFLICT(account_id) DO UPDATE SET last_uid=excluded.last_uid, updated_at=excluded.updated_at",
             (account_id, max_uid, utc_now_iso()),
         )
-        return saved
+        return saved + sent_saved
     finally:
         try:
             client.logout()
@@ -584,11 +669,11 @@ class AppHandler(BaseHTTPRequestHandler):
             return json_response(self, get_settings())
         if parsed.path == "/api/contacts":
             account_id = int((parse_qs(parsed.query).get("account_id") or ["0"])[0])
-            return json_response(self, db_fetch_all("SELECT email, COALESCE(display_name,'') AS display_name FROM contacts WHERE account_id=? ORDER BY COALESCE(display_name,email)", (account_id,)))
+            return json_response(self, db_fetch_all("SELECT email, COALESCE(display_name,'') AS display_name, COALESCE(avatar_url,'') AS avatar_url FROM contacts WHERE account_id=? ORDER BY COALESCE(display_name,email)", (account_id,)))
         if parsed.path == "/api/groups":
             account_id = int((parse_qs(parsed.query).get("account_id") or ["0"])[0])
             groups = db_fetch_all("""
-                SELECT g.id, g.name, COUNT(m.id) AS members
+                SELECT g.id, g.name, COALESCE(g.avatar_url,'') AS avatar_url, COUNT(m.id) AS members
                 FROM chat_groups g LEFT JOIN group_members m ON m.group_id=g.id
                 WHERE g.account_id=?
                 GROUP BY g.id
@@ -608,6 +693,7 @@ class AppHandler(BaseHTTPRequestHandler):
                 """
                 SELECT m.contact_email,
                        COALESCE(c.display_name, m.contact_email) AS display_name,
+                       COALESCE(c.avatar_url, '') AS avatar_url,
                        MAX(m.sent_at) AS last_at,
                        (SELECT body FROM messages m2 WHERE m2.account_id = m.account_id AND m2.contact_email = m.contact_email ORDER BY sent_at DESC, id DESC LIMIT 1) AS last_body,
                        SUM(CASE WHEN m.direction='inbound' AND COALESCE(m.is_read,0)=0 THEN 1 ELSE 0 END) AS unread_count
@@ -682,13 +768,33 @@ class AppHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/contacts":
                 data = parse_json_body(self)
                 upsert_contact(int(data["account_id"]), data["email"].lower().strip(), data.get("display_name") or None)
+                if "avatar_url" in data:
+                    db_execute("UPDATE contacts SET avatar_url=? WHERE account_id=? AND email=?", (data.get("avatar_url") or None, int(data["account_id"]), data["email"].lower().strip()))
                 return json_response(self, {"ok": True}, 201)
             if parsed.path == "/api/groups":
                 data = parse_json_body(self)
-                group_id = db_execute("INSERT INTO chat_groups(account_id,name,created_at) VALUES(?,?,?)", (int(data["account_id"]), data["name"], utc_now_iso()))
+                group_id = db_execute("INSERT INTO chat_groups(account_id,name,avatar_url,created_at) VALUES(?,?,?,?)", (int(data["account_id"]), data["name"], data.get("avatar_url") or None, utc_now_iso()))
                 for email in data.get("members", []):
                     db_execute("INSERT OR IGNORE INTO group_members(group_id,email) VALUES(?,?)", (group_id, email.lower().strip()))
                 return json_response(self, {"id": group_id}, 201)
+            if parsed.path == "/api/profile":
+                data = parse_json_body(self)
+                account_id = int(data["account_id"])
+                kind = data.get("kind")
+                if kind == "contact":
+                    email = (data.get("email") or "").lower().strip()
+                    if data.get("new_email") and data.get("new_email").lower().strip() != email:
+                        new_email = data.get("new_email").lower().strip()
+                        db_execute("UPDATE contacts SET email=? WHERE account_id=? AND email=?", (new_email, account_id, email))
+                        db_execute("UPDATE messages SET contact_email=? WHERE account_id=? AND contact_email=?", (new_email, account_id, email))
+                        email = new_email
+                    db_execute("UPDATE contacts SET display_name=?, avatar_url=? WHERE account_id=? AND email=?", (data.get("display_name") or None, data.get("avatar_url") or None, account_id, email))
+                    return json_response(self, {"ok": True, "email": email}, 200)
+                if kind == "group":
+                    gid = int(data.get("group_id"))
+                    db_execute("UPDATE chat_groups SET name=?, avatar_url=? WHERE id=? AND account_id=?", (data.get("name") or "Gruppe", data.get("avatar_url") or None, gid, account_id))
+                    return json_response(self, {"ok": True}, 200)
+                return json_response(self, {"error": "Ungültiger Profiltyp"}, 400)
             if parsed.path == "/api/settings":
                 data = parse_json_body(self)
                 for k, v in data.items():

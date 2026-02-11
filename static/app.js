@@ -11,6 +11,8 @@ const state = {
   isPolling: false,
   openChatToken: 0,
   replyToMessageId: null,
+  errors: [],
+  activeAvatar: '',
 };
 
 const el = {
@@ -22,6 +24,7 @@ const el = {
   messageInput: document.getElementById('messageInput'),
   contactInfo: document.getElementById('contactInfo'),
   modeSwitchBtn: document.getElementById('modeSwitchBtn'),
+  newEntityBtn: document.getElementById('newEntityBtn'),
   mobileBackBtn: document.getElementById('mobileBackBtn'),
   quickContactInput: document.getElementById('quickContactInput'),
   quickContactNameInput: document.getElementById('quickContactNameInput'),
@@ -32,16 +35,35 @@ const el = {
   attachmentBtn: document.getElementById('attachmentBtn'),
   emojiBtn: document.getElementById('emojiBtn'),
   chatContextMenu: document.getElementById('chatContextMenu'),
+  ctxEditBtn: document.getElementById('ctxEditBtn'),
   ctxDeleteBtn: document.getElementById('ctxDeleteBtn'),
   emojiPickerWrap: document.getElementById('emojiPickerWrap'),
   emojiPicker: document.getElementById('emojiPicker'),
+  splitter: document.getElementById('splitter'),
+  profileDialog: document.getElementById('profileDialog'),
+  errorDialog: document.getElementById('errorDialog'),
+  errorLogOutput: document.getElementById('errorLogOutput'),
 };
 
+function pushError(err) {
+  const msg = `[${new Date().toLocaleTimeString('de-DE')}] ${err?.message || String(err)}`;
+  state.errors.unshift(msg);
+  state.errors = state.errors.slice(0, 200);
+  document.getElementById('errorBtn').textContent = `⚠️ ${state.errors.length}`;
+  el.errorLogOutput.textContent = state.errors.join('\n') || 'Keine Fehler';
+}
+
 async function api(path, options = {}) {
-  const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || 'Unbekannter Fehler');
-  return data;
+  try {
+    const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
+    const raw = await res.text();
+    const data = raw ? JSON.parse(raw) : {};
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    return data;
+  } catch (err) {
+    pushError(err);
+    throw err;
+  }
 }
 
 const asBool = (v) => ['1', 'true', 'yes', 'on'].includes(String(v).toLowerCase());
@@ -132,6 +154,8 @@ function hideContextMenu() {
 function openContextMenu(kind, id, x, y) {
   el.chatContextMenu.dataset.kind = kind;
   el.chatContextMenu.dataset.id = String(id || '');
+  const canEdit = ['contact', 'group', 'top_contact', 'top_group'].includes(kind);
+  el.ctxEditBtn.hidden = !canEdit;
   el.chatContextMenu.style.left = `${x}px`;
   el.chatContextMenu.style.top = `${y}px`;
   el.chatContextMenu.hidden = false;
@@ -154,6 +178,22 @@ function addDeleteMenuHandlers(node, kind, id) {
   node.addEventListener('pointerup', cancel);
   node.addEventListener('pointercancel', cancel);
   node.addEventListener('pointerleave', cancel);
+}
+
+function openProfileEditor(kind, payload = {}) {
+  const f = document.getElementById('profileForm');
+  f.kind.value = kind;
+  f.email.value = payload.email || '';
+  f.group_id.value = payload.group_id || '';
+  f.display_name.value = payload.display_name || payload.name || '';
+  f.new_email.value = payload.email || '';
+  f.avatar_url.value = payload.avatar_url || '';
+  if (kind === 'group') {
+    f.new_email.closest('label').style.display = 'none';
+  } else {
+    f.new_email.closest('label').style.display = '';
+  }
+  el.profileDialog.showModal();
 }
 
 async function initEmojiPicker() {
@@ -234,6 +274,8 @@ async function loadChats() {
     const badge = Number(chat.unread_count || 0) > 0 ? `<span class="badge">${chat.unread_count}</span>` : '';
     li.classList.toggle('has-unread', Number(chat.unread_count || 0) > 0);
     li.innerHTML = `<div class="row"><strong>${chat.display_name}</strong>${badge}</div><div class="preview">${(chat.last_body || '').slice(0, 80)}</div>`;
+    li.dataset.displayName = chat.display_name || '';
+    li.dataset.avatarUrl = chat.avatar_url || '';
     li.onclick = async () => { await openContactChat(chat.contact_email); };
     addDeleteMenuHandlers(li, 'contact', chat.contact_email);
     el.chatList.append(li);
@@ -248,6 +290,8 @@ async function loadGroups() {
     const li = document.createElement('li');
     li.className = state.activeGroup === g.id ? 'active' : '';
     li.innerHTML = `<strong>👥 ${g.name}</strong><div class="preview">${g.members} Mitglieder</div>`;
+    li.dataset.name = g.name || '';
+    li.dataset.avatarUrl = g.avatar_url || '';
     li.onclick = async () => { await openGroupChat(g.id, g.name, g.members); };
     addDeleteMenuHandlers(li, 'group', g.id);
     el.groupList.append(li);
@@ -321,13 +365,13 @@ async function sendCurrentMessage(e) {
   if (state.isSending) return;
   if (!state.accountId) return alert('Bitte zuerst ein Konto hinzufügen.');
   const body = el.messageInput.value.trim();
-  if (!body) return;
   const isHtml = document.getElementById('htmlMode').checked;
   const files = await Promise.all(Array.from(el.attachmentInput.files || []).map(async (file) => ({
     name: file.name,
     content_type: file.type || 'application/octet-stream',
     data: await fileToBase64(file),
   })));
+  if (!body && !files.length) return;
   state.isSending = true;
   el.sendButton.disabled = true;
 
@@ -458,6 +502,28 @@ function bindUi() {
     await updateActiveChatIncremental();
   };
 
+  el.newEntityBtn.onclick = async () => {
+    if (!state.accountId) return alert('Bitte zuerst ein Konto hinzufügen.');
+    const kind = prompt('Neu anlegen: "kontakt" oder "gruppe"?', 'kontakt');
+    if (!kind) return;
+    if (kind.toLowerCase().startsWith('k')) {
+      const email = (prompt('Kontakt E-Mail:', '') || '').trim().toLowerCase();
+      if (!email) return;
+      const name = (prompt('Kontakt Name:', '') || '').trim();
+      await api('/api/contacts', { method: 'POST', body: JSON.stringify({ account_id: state.accountId, email, display_name: name }) });
+      await refreshSidebars();
+      await openContactChat(email);
+      return;
+    }
+    const name = (prompt('Gruppenname:', '') || '').trim();
+    if (!name) return;
+    const membersCsv = prompt('Mitglieder E-Mails (mit Komma getrennt):', '') || '';
+    const members = membersCsv.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+    const created = await api('/api/groups', { method: 'POST', body: JSON.stringify({ account_id: state.accountId, name, members }) });
+    await refreshSidebars();
+    await openGroupChat(created.id, name, members.length);
+  };
+
   document.getElementById('quickAddContactBtn').onclick = addContactAndOpen;
   document.getElementById('createGroupBtn').onclick = createGroup;
   document.getElementById('deleteContactBtn').onclick = async () => {
@@ -524,6 +590,23 @@ function bindUi() {
     }
   };
 
+  el.ctxEditBtn.onclick = async () => {
+    const kind = el.chatContextMenu.dataset.kind;
+    const id = el.chatContextMenu.dataset.id;
+    hideContextMenu();
+    if (kind === 'contact' || kind === 'top_contact') {
+      const rows = await api(`/api/contacts?account_id=${state.accountId}`);
+      const c = rows.find((r) => r.email === id || r.email === state.activeContact) || { email: id || state.activeContact };
+      openProfileEditor('contact', c);
+    }
+    if (kind === 'group' || kind === 'top_group') {
+      const rows = await api(`/api/groups?account_id=${state.accountId}`);
+      const gid = Number(id || state.activeGroup);
+      const g = rows.find((r) => Number(r.id) === gid) || { id: gid, name: '' };
+      openProfileEditor('group', { group_id: gid, name: g.name, avatar_url: g.avatar_url || '' });
+    }
+  };
+
   window.addEventListener('pointerdown', (e) => {
     if (!el.chatContextMenu.hidden && !el.chatContextMenu.contains(e.target)) hideContextMenu();
     if (!el.emojiPickerWrap.hidden && !el.emojiPickerWrap.contains(e.target) && e.target !== el.emojiBtn) {
@@ -532,6 +615,66 @@ function bindUi() {
   });
   window.addEventListener('scroll', hideContextMenu, true);
   window.addEventListener('resize', hideContextMenu);
+
+  el.contactInfo.addEventListener('contextmenu', (e) => {
+    if (state.activeContact) {
+      e.preventDefault();
+      openContextMenu('top_contact', state.activeContact, e.clientX, e.clientY);
+    } else if (state.activeGroup) {
+      e.preventDefault();
+      openContextMenu('top_group', state.activeGroup, e.clientX, e.clientY);
+    }
+  });
+
+  document.getElementById('errorBtn').onclick = () => {
+    el.errorLogOutput.textContent = state.errors.join('\n') || 'Keine Fehler';
+    el.errorDialog.showModal();
+  };
+  document.getElementById('clearErrorsBtn').onclick = () => {
+    state.errors = [];
+    document.getElementById('errorBtn').textContent = '⚠️';
+    el.errorLogOutput.textContent = 'Keine Fehler';
+  };
+
+  document.getElementById('profileForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = new FormData(e.target);
+    await api('/api/profile', {
+      method: 'POST',
+      body: JSON.stringify({
+        account_id: state.accountId,
+        kind: form.get('kind'),
+        email: form.get('email'),
+        new_email: form.get('new_email'),
+        display_name: form.get('display_name'),
+        avatar_url: form.get('avatar_url'),
+        group_id: form.get('group_id'),
+        name: form.get('display_name'),
+      }),
+    });
+    el.profileDialog.close();
+    await refreshSidebars();
+    if (state.activeContact) await openContactChat(state.activeContact);
+    if (state.activeGroup) {
+      const rows = await api(`/api/groups?account_id=${state.accountId}`);
+      const g = rows.find((r) => Number(r.id) === Number(state.activeGroup));
+      if (g) el.contactInfo.textContent = `👥 ${g.name} • ${g.members} Mitglieder`;
+    }
+  });
+  document.getElementById('closeProfileBtn').onclick = () => el.profileDialog.close();
+
+  let dragging = false;
+  const shell = el.shell;
+  el.splitter?.addEventListener('pointerdown', (e) => {
+    dragging = true;
+    el.splitter.setPointerCapture(e.pointerId);
+  });
+  window.addEventListener('pointermove', (e) => {
+    if (!dragging || window.innerWidth < 900) return;
+    const width = Math.max(280, Math.min(720, e.clientX));
+    shell.style.gridTemplateColumns = `${width}px 8px 1fr`;
+  });
+  window.addEventListener('pointerup', () => { dragging = false; });
 
   document.getElementById('sendForm').addEventListener('submit', sendCurrentMessage);
 

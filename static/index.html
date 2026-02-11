@@ -11,7 +11,10 @@
     <aside class="sidebar">
       <div class="brand-row">
         <h1>MailChat</h1>
-        <button id="modeSwitchBtn" class="ghost">📱 Mobile</button>
+        <div class="brand-actions">
+          <button id="newEntityBtn" class="ghost" title="Neu">＋</button>
+          <button id="modeSwitchBtn" class="ghost">📱 Mobile</button>
+        </div>
       </div>
 
       <div class="toolbar account-toolbar">
@@ -19,13 +22,13 @@
         <button id="newAccountBtn">+ Konto</button>
       </div>
 
-      <div class="toolbar contact-toolbar">
+      <div class="toolbar contact-toolbar" hidden>
         <input id="quickContactInput" type="email" placeholder="Neue Kontakt-E-Mail" />
         <input id="quickContactNameInput" placeholder="Name" />
         <button id="quickAddContactBtn" class="ghost">+</button>
       </div>
 
-      <div class="toolbar group-toolbar">
+      <div class="toolbar group-toolbar" hidden>
         <input id="groupNameInput" placeholder="Neue Gruppe" />
         <button id="createGroupBtn" class="ghost">Gruppe</button>
       </div>
@@ -46,10 +49,13 @@
       </div>
     </aside>
 
+    <div id="splitter" class="splitter" role="separator" aria-orientation="vertical"></div>
+
     <main class="chat-main">
       <div class="chat-top">
         <button id="mobileBackBtn" class="ghost mobile-only" type="button">← Zurück</button>
         <div class="contact-info" id="contactInfo">Kein Chat ausgewählt</div>
+        <button id="errorBtn" class="ghost error-btn" type="button" title="Fehler anzeigen">⚠️</button>
       </div>
 
       <div id="messages" class="messages"></div>
@@ -108,9 +114,37 @@
     </form>
   </dialog>
 
+  <dialog id="profileDialog">
+    <form id="profileForm" method="dialog">
+      <h2>Profil bearbeiten</h2>
+      <input type="hidden" name="kind" />
+      <input type="hidden" name="email" />
+      <input type="hidden" name="group_id" />
+      <label>Name<input name="display_name" /></label>
+      <label>Neue E-Mail (nur Kontakt)<input name="new_email" type="email" /></label>
+      <label>Profilbild URL<input name="avatar_url" placeholder="https://..." /></label>
+      <div class="dialog-actions">
+        <button type="button" id="closeProfileBtn" class="ghost">Abbrechen</button>
+        <button type="submit">Speichern</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="errorDialog">
+    <form method="dialog" class="error-log-form">
+      <h2>Fehlerprotokoll</h2>
+      <pre id="errorLogOutput" class="error-log-output">Keine Fehler</pre>
+      <div class="dialog-actions">
+        <button type="button" id="clearErrorsBtn" class="ghost">Leeren</button>
+        <button type="submit">Schließen</button>
+      </div>
+    </form>
+  </dialog>
+
   <button id="settingsBtn" class="settings-fab" title="Einstellungen">⚙️</button>
 
   <div id="chatContextMenu" class="context-menu" hidden>
+    <button id="ctxEditBtn" type="button">Bearbeiten</button>
     <button id="ctxDeleteBtn" type="button">Löschen</button>
   </div>
 

@@ -14,7 +14,7 @@ html, body { height: 100%; }
 body { margin: 0; background: var(--bg); color: var(--text); overflow: hidden; }
 button, input, select, textarea { font: inherit; }
 
-.shell { width: 100vw; height: 100vh; display: grid; grid-template-columns: 420px 1fr; }
+.shell { width: 100vw; height: 100vh; display: grid; grid-template-columns: 420px 8px 1fr; }
 .sidebar {
   background: var(--panel);
   border-right: 1px solid #1f2c34;
@@ -36,6 +36,7 @@ button, input, select, textarea { font: inherit; }
   background: var(--panel-2);
   border-bottom: 1px solid #24323a;
 }
+.brand-actions { display: flex; gap: 6px; }
 .account-toolbar, .group-toolbar { grid-template-columns: minmax(0, 1fr) auto; }
 .contact-toolbar { grid-template-columns: minmax(0, 1fr) minmax(0, 0.8fr) auto; }
 .danger-toolbar { grid-template-columns: 1fr 1fr; }
@@ -81,13 +82,20 @@ button.full { width: 100%; }
 .chat-main { min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; background: #0f1a20; }
 .chat-top {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 8px;
   padding: 12px;
   background: var(--panel-2);
   border-bottom: 1px solid #1f2c34;
   align-items: center;
 }
+.error-btn { min-width: 44px; }
+
+.splitter {
+  background: #22313a;
+  cursor: col-resize;
+}
+.splitter:hover { background: #2f4652; }
 .contact-info {
   background: #23323b;
   border: 1px solid #32424c;
@@ -168,6 +176,18 @@ button.full { width: 100%; }
   box-shadow: 0 10px 24px rgb(0 0 0 / 0.35);
 }
 
+.error-log-form { min-width: 460px; padding: 18px; display: grid; gap: 10px; }
+.error-log-output {
+  max-height: 360px;
+  overflow: auto;
+  background: #0e1820;
+  color: #c9d8df;
+  border-radius: 10px;
+  padding: 10px;
+  margin: 0;
+  white-space: pre-wrap;
+}
+
 .mobile-only { display: none; }
 .settings-fab { position: fixed; right: 18px; bottom: 92px; z-index: 4; }
 #accountDialog, #settingsDialog { border: none; border-radius: 12px; padding: 0; }
@@ -183,6 +203,7 @@ button.full { width: 100%; }
 
 @media (max-width: 900px) {
   .shell { grid-template-columns: 1fr; }
+  .splitter { display: none; }
   .sidebar { display: none; }
   .chat-main { display: grid; }
   .mobile-only { display: inline-flex; }
