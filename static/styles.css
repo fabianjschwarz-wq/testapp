@@ -37,9 +37,12 @@ button, input, select, textarea { font: inherit; }
   border-bottom: 1px solid #24323a;
 }
 .brand-actions { display: flex; gap: 6px; }
-.account-toolbar, .group-toolbar { grid-template-columns: minmax(0, 1fr) auto; }
-.contact-toolbar { grid-template-columns: minmax(0, 1fr) minmax(0, 0.8fr) auto; }
-.danger-toolbar { grid-template-columns: 1fr 1fr; }
+.account-toolbar { grid-template-columns: minmax(0, 1fr) auto auto; }
+.account-select-wrap { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px; align-items: center; }
+.sync-dot { width: 10px; height: 10px; border-radius: 999px; display: inline-block; }
+.sync-red { background: #e15050; }
+.sync-yellow { background: #e9c34f; }
+.sync-green { background: #5ac66d; }
 .sticky-toolbar {
   background: var(--panel);
   grid-template-columns: 1fr;
@@ -89,7 +92,7 @@ button.full { width: 100%; }
   border-bottom: 1px solid #1f2c34;
   align-items: center;
 }
-.error-btn { min-width: 44px; }
+.error-btn { min-width: 40px; padding: 8px; }
 
 .splitter {
   background: #22313a;
@@ -177,6 +180,7 @@ button.full { width: 100%; }
 }
 
 .error-log-form { min-width: 460px; padding: 18px; display: grid; gap: 10px; }
+.new-entity-form, #newEntityForm { min-width: 360px; padding: 18px; display: grid; gap: 8px; }
 .error-log-output {
   max-height: 360px;
   overflow: auto;
@@ -190,9 +194,9 @@ button.full { width: 100%; }
 
 .mobile-only { display: none; }
 .settings-fab { position: fixed; right: 18px; bottom: 92px; z-index: 4; }
-#accountDialog, #settingsDialog { border: none; border-radius: 12px; padding: 0; }
-#accountDialog form, #settingsDialog form { min-width: 360px; padding: 18px; display: flex; flex-direction: column; gap: 8px; }
-#accountDialog label, #settingsDialog label { display: grid; gap: 4px; color: #1f2c34; }
+#accountDialog, #settingsDialog, #profileDialog, #newEntityDialog, #errorDialog { border: none; border-radius: 12px; padding: 0; }
+#accountDialog form, #settingsDialog form, #profileDialog form, #newEntityDialog form { min-width: 360px; padding: 18px; display: flex; flex-direction: column; gap: 8px; }
+#accountDialog label, #settingsDialog label, #profileDialog label, #newEntityDialog label { display: grid; gap: 4px; color: #1f2c34; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
 
 .shell.mobile-mode { grid-template-columns: 1fr; }

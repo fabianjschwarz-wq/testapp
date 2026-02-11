@@ -13,6 +13,7 @@ from email.utils import getaddresses, parsedate_to_datetime
 import imaplib
 import smtplib
 import base64
+import socket
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -480,6 +481,8 @@ def smtp_send_with_security(account, msg: EmailMessage):
             return method()
         except (ssl.SSLError, smtplib.SMTPException, OSError) as err:
             last_error = err
+    if isinstance(last_error, socket.gaierror):
+        raise ValueError(f"SMTP Versand fehlgeschlagen: Server '{host}' konnte nicht aufgelöst werden (DNS). Bitte Host prüfen.")
     raise ValueError(f"SMTP Versand fehlgeschlagen: {last_error}")
 
 
@@ -755,6 +758,23 @@ class AppHandler(BaseHTTPRequestHandler):
                     (data["name"], data["email"], data["imap_host"], int(data["imap_port"]), data["smtp_host"], int(data["smtp_port"]), data["password"], 1 if data.get("use_ssl", True) else 0, data.get("smtp_security", "auto"), utc_now_iso()),
                 )
                 return json_response(self, {"id": account_id}, 201)
+            if parsed.path == "/api/accounts/update":
+                data = parse_json_body(self)
+                account_id = int(data["id"])
+                current = db_fetch_one("SELECT password FROM accounts WHERE id=?", (account_id,))
+                pw = data.get("password") or (current["password"] if current else "")
+                db_execute(
+                    """
+                    UPDATE accounts
+                    SET name=?, email=?, imap_host=?, imap_port=?, smtp_host=?, smtp_port=?, password=?, use_ssl=?, smtp_security=?
+                    WHERE id=?
+                    """,
+                    (
+                        data["name"], data["email"], data["imap_host"], int(data["imap_port"]), data["smtp_host"], int(data["smtp_port"]),
+                        pw, 1 if data.get("use_ssl", True) else 0, data.get("smtp_security", "auto"), account_id,
+                    ),
+                )
+                return json_response(self, {"ok": True}, 200)
             if parsed.path == "/api/sync":
                 return json_response(self, {"saved": sync_account(int(parse_json_body(self)["account_id"]))})
             if parsed.path == "/api/send":

@@ -13,11 +13,14 @@ const state = {
   replyToMessageId: null,
   errors: [],
   activeAvatar: '',
+  accounts: [],
 };
 
 const el = {
   shell: document.getElementById('shell'),
   accountSelect: document.getElementById('accountSelect'),
+  accountSyncDot: document.getElementById('accountSyncDot'),
+  editAccountBtn: document.getElementById('editAccountBtn'),
   chatList: document.getElementById('chatList'),
   groupList: document.getElementById('groupList'),
   messages: document.getElementById('messages'),
@@ -41,9 +44,25 @@ const el = {
   emojiPicker: document.getElementById('emojiPicker'),
   splitter: document.getElementById('splitter'),
   profileDialog: document.getElementById('profileDialog'),
+  newEntityDialog: document.getElementById('newEntityDialog'),
   errorDialog: document.getElementById('errorDialog'),
   errorLogOutput: document.getElementById('errorLogOutput'),
 };
+
+function setSyncState(stateName) {
+  el.accountSyncDot.classList.remove('sync-red', 'sync-yellow', 'sync-green');
+  el.accountSyncDot.classList.add(stateName === 'syncing' ? 'sync-yellow' : stateName === 'ok' ? 'sync-green' : 'sync-red');
+}
+
+function fileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    if (!file) return resolve('');
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Datei konnte nicht gelesen werden'));
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.readAsDataURL(file);
+  });
+}
 
 function pushError(err) {
   const msg = `[${new Date().toLocaleTimeString('de-DE')}] ${err?.message || String(err)}`;
@@ -188,6 +207,7 @@ function openProfileEditor(kind, payload = {}) {
   f.display_name.value = payload.display_name || payload.name || '';
   f.new_email.value = payload.email || '';
   f.avatar_url.value = payload.avatar_url || '';
+  if (f.avatar_file) f.avatar_file.value = '';
   if (kind === 'group') {
     f.new_email.closest('label').style.display = 'none';
   } else {
@@ -239,11 +259,13 @@ async function loadSettings() {
 
 async function loadAccounts() {
   const accounts = await api('/api/accounts');
+  state.accounts = accounts;
   el.accountSelect.innerHTML = '';
   if (!accounts.length) {
     el.accountSelect.innerHTML = '<option>Kein Konto vorhanden</option>';
     state.accountId = null;
     el.messages.innerHTML = '<p class="empty">Bitte zuerst ein E-Mail-Konto hinzufügen.</p>';
+    setSyncState('idle');
     return;
   }
   accounts.forEach((a) => {
@@ -254,6 +276,7 @@ async function loadAccounts() {
   });
   if (!state.accountId) state.accountId = Number(accounts[0].id);
   el.accountSelect.value = String(state.accountId);
+  setSyncState('idle');
   await refreshSidebars();
 }
 
@@ -438,8 +461,10 @@ async function pollRealtime() {
   state.isPolling = true;
   try {
     if (asBool(state.settings?.auto_sync_enabled)) {
+      setSyncState('syncing');
       await api('/api/sync', { method: 'POST', body: JSON.stringify({ account_id: state.accountId }) });
       await refreshSidebars();
+      setSyncState('ok');
     }
     await updateActiveChatIncremental();
   } finally {
@@ -464,7 +489,12 @@ function notify(title, body) {
 }
 
 function bindUi() {
-  document.getElementById('newAccountBtn').onclick = () => document.getElementById('accountDialog').showModal();
+  document.getElementById('newAccountBtn').onclick = () => {
+    const form = document.getElementById('accountForm');
+    form.reset();
+    form.account_id.value = '';
+    document.getElementById('accountDialog').showModal();
+  };
   document.getElementById('closeDialogBtn').onclick = () => document.getElementById('accountDialog').close();
   document.getElementById('settingsBtn').onclick = () => el.settingsDialog.showModal();
   document.getElementById('closeSettingsBtn').onclick = () => el.settingsDialog.close();
@@ -497,48 +527,70 @@ function bindUi() {
 
   document.getElementById('syncBtn').onclick = async () => {
     if (!state.accountId) return;
-    await api('/api/sync', { method: 'POST', body: JSON.stringify({ account_id: state.accountId }) });
-    await refreshSidebars();
-    await updateActiveChatIncremental();
+    setSyncState('syncing');
+    try {
+      await api('/api/sync', { method: 'POST', body: JSON.stringify({ account_id: state.accountId }) });
+      await refreshSidebars();
+      await updateActiveChatIncremental();
+      setSyncState('ok');
+    } catch {
+      setSyncState('idle');
+      throw new Error('Synchronisierung fehlgeschlagen');
+    }
   };
 
-  el.newEntityBtn.onclick = async () => {
+  el.newEntityBtn.onclick = () => {
     if (!state.accountId) return alert('Bitte zuerst ein Konto hinzufügen.');
-    const kind = prompt('Neu anlegen: "kontakt" oder "gruppe"?', 'kontakt');
-    if (!kind) return;
-    if (kind.toLowerCase().startsWith('k')) {
-      const email = (prompt('Kontakt E-Mail:', '') || '').trim().toLowerCase();
+    el.newEntityDialog.showModal();
+  };
+  document.getElementById('closeNewEntityBtn').onclick = () => el.newEntityDialog.close();
+  const newTypeSel = document.querySelector('#newEntityForm [name="type"]');
+  const emailLabel = document.getElementById('newEntityEmailLabel');
+  const membersLabel = document.getElementById('newEntityMembersLabel');
+  const syncTypeUi = () => {
+    const isGroup = newTypeSel.value === 'group';
+    emailLabel.hidden = isGroup;
+    membersLabel.hidden = !isGroup;
+  };
+  syncTypeUi();
+  newTypeSel.onchange = syncTypeUi;
+  document.getElementById('newEntityForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    const type = String(f.get('type'));
+    if (type === 'contact') {
+      const email = String(f.get('email') || '').trim().toLowerCase();
+      const name = String(f.get('name') || '').trim();
       if (!email) return;
-      const name = (prompt('Kontakt Name:', '') || '').trim();
       await api('/api/contacts', { method: 'POST', body: JSON.stringify({ account_id: state.accountId, email, display_name: name }) });
+      el.newEntityDialog.close();
       await refreshSidebars();
       await openContactChat(email);
       return;
     }
-    const name = (prompt('Gruppenname:', '') || '').trim();
-    if (!name) return;
-    const membersCsv = prompt('Mitglieder E-Mails (mit Komma getrennt):', '') || '';
-    const members = membersCsv.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+    const name = String(f.get('name') || '').trim();
+    const members = String(f.get('members') || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
     const created = await api('/api/groups', { method: 'POST', body: JSON.stringify({ account_id: state.accountId, name, members }) });
+    el.newEntityDialog.close();
     await refreshSidebars();
     await openGroupChat(created.id, name, members.length);
-  };
+  });
 
-  document.getElementById('quickAddContactBtn').onclick = addContactAndOpen;
-  document.getElementById('createGroupBtn').onclick = createGroup;
-  document.getElementById('deleteContactBtn').onclick = async () => {
-    if (!state.accountId || !state.activeContact) return;
-    await api(`/api/contacts?account_id=${state.accountId}&email=${encodeURIComponent(state.activeContact)}`, { method: 'DELETE' });
-    state.activeContact = null;
-    el.messages.innerHTML = '<p class="empty">Kontakt gelöscht.</p>';
-    await refreshSidebars();
-  };
-  document.getElementById('deleteGroupBtn').onclick = async () => {
-    if (!state.accountId || !state.activeGroup) return;
-    await api(`/api/groups?account_id=${state.accountId}&id=${state.activeGroup}`, { method: 'DELETE' });
-    state.activeGroup = null;
-    el.messages.innerHTML = '<p class="empty">Gruppe gelöscht.</p>';
-    await refreshSidebars();
+  el.editAccountBtn.onclick = () => {
+    const account = state.accounts.find((a) => Number(a.id) === Number(state.accountId));
+    if (!account) return;
+    const form = document.getElementById('accountForm');
+    form.account_id.value = account.id;
+    form.name.value = account.name;
+    form.email.value = account.email;
+    form.imap_host.value = account.imap_host;
+    form.imap_port.value = account.imap_port;
+    form.smtp_host.value = account.smtp_host;
+    form.smtp_port.value = account.smtp_port;
+    form.smtp_security.value = account.smtp_security || 'auto';
+    form.password.value = '';
+    form.use_ssl.checked = Number(account.use_ssl || 0) === 1;
+    document.getElementById('accountDialog').showModal();
   };
   el.emojiBtn.onclick = () => {
     el.messageInput.focus();
@@ -639,6 +691,8 @@ function bindUi() {
   document.getElementById('profileForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const form = new FormData(e.target);
+    const avatarFile = form.get('avatar_file');
+    const avatarFromFile = avatarFile && avatarFile.size ? await fileAsDataUrl(avatarFile) : '';
     await api('/api/profile', {
       method: 'POST',
       body: JSON.stringify({
@@ -647,7 +701,7 @@ function bindUi() {
         email: form.get('email'),
         new_email: form.get('new_email'),
         display_name: form.get('display_name'),
-        avatar_url: form.get('avatar_url'),
+        avatar_url: avatarFromFile || form.get('avatar_url'),
         group_id: form.get('group_id'),
         name: form.get('display_name'),
       }),
@@ -681,13 +735,16 @@ function bindUi() {
   document.getElementById('accountForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const form = new FormData(e.target);
-    await api('/api/accounts', {
+    const payload = {
+      id: form.get('account_id'),
+      name: form.get('name'), email: form.get('email'), imap_host: form.get('imap_host'), imap_port: form.get('imap_port'),
+      smtp_host: form.get('smtp_host'), smtp_port: form.get('smtp_port'), smtp_security: form.get('smtp_security'),
+      password: form.get('password'), use_ssl: form.get('use_ssl') === 'on',
+    };
+    const isEdit = Boolean(payload.id);
+    await api(isEdit ? '/api/accounts/update' : '/api/accounts', {
       method: 'POST',
-      body: JSON.stringify({
-        name: form.get('name'), email: form.get('email'), imap_host: form.get('imap_host'), imap_port: form.get('imap_port'),
-        smtp_host: form.get('smtp_host'), smtp_port: form.get('smtp_port'), smtp_security: form.get('smtp_security'),
-        password: form.get('password'), use_ssl: form.get('use_ssl') === 'on',
-      }),
+      body: JSON.stringify(payload),
     });
     e.target.reset();
     document.getElementById('accountDialog').close();
